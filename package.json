@@ -1,0 +1,38 @@
+{
+  "name": "static-server",
+  "version": "0.0.1",
+  "description": "一个基于 nodejs 的简易静态服务器，方便随时开发调试使用",
+  "main": "index.js",
+  "type": "commonjs",
+  "bin": {
+    "sserver": "bin/sserver.js",
+    "ss": "bin/sserver.js"
+  },
+  "repository": "http://github.com/lzwme/static-server.git",
+  "author": {
+    "name": "renxia",
+    "email": "lzwy0820@qq.com",
+    "url": "https://lzw.me"
+  },
+  "license": "MIT",
+  "private": false,
+  "engines": {
+    "node": ">=14"
+  },
+  "keywords": [
+    "web-server",
+    "static-server"
+  ],
+  "scripts": {
+    "start": "node bin/sserver.js",
+    "version": "standard-version"
+  },
+  "dependencies": {
+    "commander": "^7.2.0",
+    "chalk": "^4.1.1",
+    "express": "^4.17.1"
+  },
+  "devDependencies": {
+    "standard-version": "^9.3.0"
+  }
+}
