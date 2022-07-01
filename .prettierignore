@@ -1,4 +1,2 @@
-# add files you wish to ignore here
-node_modeules/**
-/dist/**
-release/**
+# package.json is formatted by package managers, so we ignore it here
+package.json

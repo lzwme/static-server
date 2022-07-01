@@ -1,7 +1,6 @@
-[![Code Climate](https://lzw.me/images/logo.png)](https://lzw.me)
-[![@lzwme/static-server](https://nodei.co/npm/@lzwme/static-server.png)](npm-url)
+[![@lzwme/sserver](https://nodei.co/npm/@lzwme/sserver.png)][npm-url]
 
-# @lzwme/static-server
+# @lzwme/sserver
 
 [![NPM version][npm-badge]][npm-url]
 [![node version][node-badge]][node-url]
@@ -9,25 +8,38 @@
 [![GitHub issues][issues-badge]][issues-url]
 [![GitHub forks][forks-badge]][forks-url]
 [![GitHub stars][stars-badge]][stars-url]
-[![minzipped size][bundlephobia-badge]][bundlephobia-url]
 
 一个基于 nodejs 的简易静态服务器，方便随时开发调试使用。
 
 ## 安装
 
+安装：
+
 ```bash
 # 全局安装
-npm i -g @lzwme/static-server
+npm i -g @lzwme/sserver
 # 测试
 sserver -h
 
 # 项目中安装
-npm i -D @lzwme/static-server
-yarn add -D @lzwme/static-server
+npm i -D @lzwme/sserver
+yarn add -D @lzwme/sserver
+```
 
+也可以不安装，直接使用 `npx` 执行：
+
+```bash
+npx @lzwme/sserver -d ./dist
 ```
 
 ## 使用
+
+示例：
+
+```bash
+# 已当前目录下的 dist 作为静态目录
+ssserver -d ./dist
+```
 
 ### 帮助信息
 
@@ -41,12 +53,39 @@ Usage: sserver|ss [options]
 Options:
   -v, --version        output the version number
   -d, --dir [rootDir]  静态服务器的根目录路径
-  -p, --port           端口号 (default: 6010)
+  -p, --port           端口号 (default: 8890)
   -o, --open           启动后是否打开静态服务器首页
   --debug              开启调试模式。 (default: false)
   -h, --help           display help for command
 ```
 
+### 配置代理转发
+
+支持通过配置文件 `ss.config.js` 指定代理转发信息。示例：
+
+```js
+// ss.config.js
+
+/** @type {import('@lzwme/sserver').SSConfig} */
+module.exports = {
+  port: 8890,
+  baseDir: './dist',
+  // 代理转发配置
+  proxyConfig: [
+    // 代理企业微信机器人接口示例
+    {
+      api: '/proxy/cgi-bin/webhook/send',
+      config: {
+        target: 'https://qyapi.weixin.qq.com',
+        changeOrigin: true,
+        pathRewrite: {
+          '^/proxy': '',
+        },
+      },
+    },
+  ],
+}
+```
 
 ## 开发
 
@@ -54,9 +93,9 @@ Options:
 
 ```bash
 git clone https://github.com/lzwme/static-server
-yarn install
+pnpm install
 npm link
-yarn dev
+pnpm dev
 ```
 
 或者 fork 本项目进行代码贡献。
@@ -65,7 +104,7 @@ yarn dev
 
 ## License
 
-`@lzwme/static-server` is released under the MIT license.
+`@lzwme/sserver` is released under the MIT license.
 
 该插件由[志文工作室](https://lzw.me)开发和维护。
 
@@ -76,11 +115,11 @@ yarn dev
 [forks-url]: https://github.com/lzwme/static-server/network
 [issues-badge]: https://img.shields.io/github/issues/lzwme/static-server.svg
 [issues-url]: https://github.com/lzwme/static-server/issues
-[npm-badge]: https://img.shields.io/npm/v/@lzwme/static-server.svg?style=flat-square
-[npm-url]: https://npmjs.org/package/@lzwme/static-server
+[npm-badge]: https://img.shields.io/npm/v/@lzwme/sserver.svg?style=flat-square
+[npm-url]: https://npmjs.org/package/@lzwme/sserver
 [node-badge]: https://img.shields.io/badge/node.js-%3E=_10.0.0-green.svg?style=flat-square
 [node-url]: https://nodejs.org/download/
-[download-badge]: https://img.shields.io/npm/dm/@lzwme/static-server.svg?style=flat-square
-[download-url]: https://npmjs.org/package/@lzwme/static-server
-[bundlephobia-url]: https://bundlephobia.com/result?p=@lzwme/static-server@latest
-[bundlephobia-badge]: https://badgen.net/bundlephobia/minzip/@lzwme/static-server@latest
+[download-badge]: https://img.shields.io/npm/dm/@lzwme/sserver.svg?style=flat-square
+[download-url]: https://npmjs.org/package/@lzwme/sserver
+[bundlephobia-url]: https://bundlephobia.com/result?p=@lzwme/sserver@latest
+[bundlephobia-badge]: https://badgen.net/bundlephobia/minzip/@lzwme/sserver@latest

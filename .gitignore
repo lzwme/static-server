@@ -10,6 +10,8 @@ ehthumbs.db
 Desktop.ini
 builder/windows
 builder/res
+tmp
+temp
 
 # Linux
 .directory
@@ -32,6 +34,11 @@ benchmarks/graphs
 *_bak
 reports/**
 
+pnpm-lock.yaml
 package-lock.json
 yarn.lock
 yarn-error.log
+
+# configs
+ss.config.js
+.grs.config.js
