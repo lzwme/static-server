@@ -1,7 +1,8 @@
 import { program } from 'commander';
 import chalk from 'chalk';
 import { initServer } from '../src/static-server';
-import pkg from '../package.json';
+
+const pkg = require('../package.json');
 
 program
   .aliases(['ss'])

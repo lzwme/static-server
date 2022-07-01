@@ -3,21 +3,21 @@
  * @Author: lzw
  * @Date: 2021-05-28 16:24:40
  * @LastEditors: lzw
- * @LastEditTime: 2022-07-01 17:07:39
+ * @LastEditTime: 2022-07-01 17:43:51
  * @Description:
  */
 
 import { color } from 'console-log-colors';
-import express from 'express';
+import express, { type Express } from 'express';
 import { execSync } from 'child_process';
 import { getConfig, SSConfig } from './config';
 import { proxyByExpress } from './proxy/express-proxy';
 
-export const initServer = (options?: SSConfig) => {
+export function initServer(options?: SSConfig): Express {
   options = getConfig(true, options);
 
-  const { baseDir = '.', port = 8890 } = options;
   const app = express();
+  const { baseDir = '.', port = 8890 } = options;
 
   // @see https://www.expressjs.com.cn/4x/api.html#express.static
   app.use(express.static(baseDir));
