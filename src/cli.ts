@@ -1,6 +1,6 @@
 import { program } from 'commander';
 import chalk from 'chalk';
-import { initServer } from '../src/static-server';
+import { initServer } from './static-server';
 
 const pkg = require('../package.json');
 
