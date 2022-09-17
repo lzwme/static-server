@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.0.3](https://github.com/lzwme/static-server/compare/v0.0.2...v0.0.3) (2022-09-17)
+
+
+### Bug Fixes
+
+* 修正 cli.ts 引用 chalk 导致的异常 ([52616f0](https://github.com/lzwme/static-server/commit/52616f0afad9f1bdc7f7ab1a7f13ada01cc0dbcb))
+
 ### [0.0.2](https://github.com/lzwme/static-server/compare/v0.0.1...v0.0.2) (2022-09-15)
 
 
