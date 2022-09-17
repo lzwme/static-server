@@ -30,6 +30,7 @@
     "access": "public",
     "registry": "https://registry.npmjs.com"
   },
+  "files": ["dist", "ss.config.sample.js"],
   "scripts": {
     "prepare": "husky install",
     "ss": "node bin/sserver.js",
