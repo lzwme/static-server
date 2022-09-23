@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.0.4](https://github.com/lzwme/static-server/compare/v0.0.3...v0.0.4) (2022-09-23)
+
+
+### Features
+
+* 增加 log 配置参数，支持配置指定日志记录目录 ([1242aba](https://github.com/lzwme/static-server/commit/1242aba2c298fb6e8dd1cbf0540de31590c2c704))
+
+
+### Bug Fixes
+
+* open 参数默认为 false ([42a5bbf](https://github.com/lzwme/static-server/commit/42a5bbfe12461a44ac96c1d891d57755d340e755))
+
 ### [0.0.3](https://github.com/lzwme/static-server/compare/v0.0.2...v0.0.3) (2022-09-17)
 
 

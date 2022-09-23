@@ -1,6 +1,6 @@
 {
   "name": "@lzwme/sserver",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "一个基于 nodejs 的简易静态服务器，方便随时开发调试使用",
   "main": "dist/index.js",
   "type": "commonjs",
