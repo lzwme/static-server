@@ -10,7 +10,7 @@ module.exports = {
         target: 'https://qyapi.weixin.qq.com',
         changeOrigin: true,
         pathRewrite: {
-          '^/proxy': '',
+          '^/proxy/cgi-bin': '/cgi-bin',
         },
       },
     },

@@ -38,25 +38,7 @@ npx @lzwme/sserver -d ./dist
 
 ```bash
 # 已当前目录下的 dist 作为静态目录
-ssserver -d ./dist
-```
-
-### 帮助信息
-
-```bash
-sserver -h
-
-Usage: sserver|ss [options]
-
-一个基于 nodejs 的简易静态服务器，方便随时调试使用 [version@1.0.0]
-
-Options:
-  -v, --version        output the version number
-  -d, --dir [rootDir]  静态服务器的根目录路径
-  -p, --port           端口号 (default: 8890)
-  -o, --open           启动后是否打开静态服务器首页
-  --debug              开启调试模式。 (default: false)
-  -h, --help           display help for command
+sserver -d ./dist
 ```
 
 ### 配置代理转发
@@ -72,14 +54,14 @@ module.exports = {
   baseDir: './dist',
   // 代理转发配置
   proxyConfig: [
-    // 代理企业微信机器人接口示例
+    // 内网代理企业微信机器人接口示例
     {
       api: '/proxy/cgi-bin/webhook/send',
       config: {
         target: 'https://qyapi.weixin.qq.com',
         changeOrigin: true,
         pathRewrite: {
-          '^/proxy': '',
+          '^/proxy/cgi-bin': '/cgi-bin',
         },
       },
     },

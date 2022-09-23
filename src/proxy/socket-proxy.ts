@@ -1,4 +1,4 @@
-import net from 'net';
+import net from 'node:net';
 import { log } from 'console-log-colors';
 
 export function socketProxy(

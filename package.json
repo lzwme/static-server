@@ -17,7 +17,7 @@
   "license": "MIT",
   "private": false,
   "engines": {
-    "node": ">=14"
+    "node": "^14.18.0 || >=16.15.0"
   },
   "packageManager": "pnpm@7.2.0",
   "keywords": [
@@ -30,7 +30,10 @@
     "access": "public",
     "registry": "https://registry.npmjs.com"
   },
-  "files": ["dist", "ss.config.sample.js"],
+  "files": [
+    "dist",
+    "ss.config.sample.js"
+  ],
   "scripts": {
     "prepare": "husky install",
     "ss": "node bin/sserver.js",
@@ -42,6 +45,7 @@
     "version": "standard-version"
   },
   "dependencies": {
+    "@lzwme/fe-utils": "^1.0.0",
     "commander": "^9.4.0",
     "console-log-colors": "^0.2.3",
     "express": "^4.18.1",
