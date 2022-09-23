@@ -15,7 +15,7 @@ export interface SSConfig {
 
 const ssConfig: SSConfig = {
   baseDir: '.',
-  open: true,
+  open: false,
   port: 8890,
   proxyConfig: [],
 };
