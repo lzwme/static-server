@@ -45,19 +45,19 @@
     "version": "standard-version"
   },
   "dependencies": {
-    "@lzwme/fe-utils": "^1.0.0",
-    "commander": "^9.4.0",
+    "@lzwme/fe-utils": "^1.1.0",
+    "commander": "^9.4.1",
     "console-log-colors": "^0.2.3",
-    "express": "^4.18.1",
+    "express": "^4.18.2",
     "http-proxy-middleware": "^2.0.6"
   },
   "devDependencies": {
     "@lzwme/fed-lint-helper": "^2.0.1",
     "@types/express": "^4.17.14",
-    "@types/node": "^18.7.18",
+    "@types/node": "^18.11.2",
     "husky": "^8.0.1",
     "standard-version": "^9.5.0",
     "ts-node": "^10.9.1",
-    "typescript": "^4.8.3"
+    "typescript": "^4.8.4"
   }
 }
