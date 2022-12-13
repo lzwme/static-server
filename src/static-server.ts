@@ -7,6 +7,7 @@
  */
 
 import { resolve } from 'node:path';
+import { createServer } from 'node:https';
 import { color } from 'console-log-colors';
 import express, { type Express } from 'express';
 import { execSync } from 'child_process';
@@ -30,10 +31,17 @@ export function initServer(options?: SSConfig): Express {
   );
 
   proxyByExpress(app);
-  app.listen(port, () => {
+
+  const onListen = () => {
     logger.log(color.green(`Start : `.padStart(15, ' ')), color.cyanBright(url));
     logger.log(color.green(`ROOT DIR : `.padStart(15, ' ')), color.cyanBright(baseDir));
-  });
+  };
+
+  if (options.https) {
+    createServer(options.ssl!, app).listen(port, onListen);
+  } else {
+    app.listen(port, onListen);
+  }
 
   logger.debug(options);
 
