@@ -28,23 +28,23 @@ program
   });
 
   program
-  .command('init [destination]')
-  .description('初始化一个 ss.config.js 文件至指定的目录。默认为当前目录')
-  .action((destination = process.cwd()) => {
-    const confFile = resolve(destination, 'ss.config.js');
-    if (existsSync(confFile)) {
-      logger.warn('配置文件已存在，请确认：', color.cyanBright(confFile));
-      return;
-    }
+    .command('init [destination]')
+    .description('初始化一个 ss.config.js 文件至指定的目录。默认为当前目录')
+    .action((destination = process.cwd()) => {
+      const confFile = resolve(destination, 'ss.config.js');
+      if (existsSync(confFile)) {
+        logger.warn('配置文件已存在，请确认：', color.cyanBright(confFile));
+        return;
+      }
 
-    const tplFile = resolve(__dirname, '../ss.config.sample.js');
-    if (!existsSync(tplFile)) {
-      logger.error('未找到配置文件模板：', color.red(tplFile));
-      return;
-    }
+      const tplFile = resolve(__dirname, '../ss.config.sample.js');
+      if (!existsSync(tplFile)) {
+        logger.error('未找到配置文件模板：', color.red(tplFile));
+        return;
+      }
 
-    writeFileSync(confFile, readFileSync(tplFile));
-    logger.info('已生成配置文件：', color.greenBright(confFile));
-  });
+      writeFileSync(confFile, readFileSync(tplFile));
+      logger.info('已生成配置文件：', color.greenBright(confFile));
+    });
 
 program.parse(process.argv);

@@ -12,6 +12,8 @@ export interface SSConfig {
   open?: boolean;
   /** 监听端口号 */
   port?: number;
+  /** host 地址。默认为 127.0.0.1 */
+  host?: string;
   /** 代理转发配置 */
   proxyConfig?: { api: string; config: Options }[];
   /** 是否开启日志记录。默认为 false。若设置为 true 则默认为 ~/.sserver/log.log；若为字符串，则设置为日志路径 */

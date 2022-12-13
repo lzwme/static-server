@@ -18,7 +18,8 @@ export function initServer(options?: SSConfig): Express {
   options = getConfig(true, options);
 
   const app = express();
-  const { port = 8890 } = options;
+  const { port = 8890, host = '127.0.0.1' } = options;
+  const url = `http://${host}:${port}`;
   const baseDir = resolve(process.cwd(), typeof options.baseDir === 'string' ? options.baseDir : '.');
 
   // @see https://www.expressjs.com.cn/4x/api.html#express.static
@@ -29,16 +30,15 @@ export function initServer(options?: SSConfig): Express {
   );
 
   proxyByExpress(app);
-
   app.listen(port, () => {
-    logger.log(color.green(`Listening On:`), port);
-    logger.log(color.green(`ROOT DIR:`), color.cyanBright(baseDir));
+    logger.log(color.green(`Start : `.padStart(15, ' ')), color.cyanBright(url));
+    logger.log(color.green(`ROOT DIR : `.padStart(15, ' ')), color.cyanBright(baseDir));
   });
 
   logger.debug(options);
 
   if (options.open) {
-    const openPageCmd = `${process.platform === 'win32' ? `start` : `open`} http://localhost:${port}`;
+    const openPageCmd = `${process.platform === 'win32' ? `start` : `open`} ${url}`;
     execSync(openPageCmd);
   }
 
