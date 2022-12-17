@@ -27,6 +27,7 @@ dist
 
 # Coveralls
 coverage
+cache
 
 # Benchmarking
 benchmarks/graphs

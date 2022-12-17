@@ -14,14 +14,21 @@ import { execSync } from 'child_process';
 import { getConfig, SSConfig } from './config';
 import { proxyByExpress } from './proxy/express-proxy';
 import { logger } from './get-logger';
+import { getCert } from './lib/get-cert';
 
-export function initServer(options?: SSConfig): Express {
+export async function initServer(options?: SSConfig): Promise<Express> {
   options = getConfig(true, options);
 
   const app = express();
-  const { port = 8890, host = '127.0.0.1' } = options;
-  const url = `http://${host}:${port}`;
+  const { port = 8890, host = 'localhost' } = options;
+  const url = `http${options.https ? 's' : ''}://${host}:${port}`;
   const baseDir = resolve(process.cwd(), typeof options.baseDir === 'string' ? options.baseDir : '.');
+
+  if (options.https && !options.ssl!.cert) {
+    const info = await getCert(host);
+    options.ssl!.key = Buffer.from(info.certKey);
+    options.ssl!.cert = Buffer.from(info.certCrt);
+  }
 
   // @see https://www.expressjs.com.cn/4x/api.html#express.static
   app.use(
