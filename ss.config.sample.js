@@ -1,7 +1,6 @@
 /** @type {import('@lzwme/sserver').SSConfig} */
 module.exports = {
-  port: 8888,
-  port: 8888,
+  // port: 8888,
   https: false,
   sslCache: '',
   rootDir: '.',
