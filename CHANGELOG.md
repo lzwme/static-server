@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.0.5](https://github.com/lzwme/static-server/compare/v0.0.4...v0.0.5) (2022-12-18)
+
+
+### Features
+
+* 新增 init 命令，支持根据模板创建配置文件 ([4ebc9ca](https://github.com/lzwme/static-server/commit/4ebc9cad784fe7bfa81a543acd14f2d058f828ad))
+* 新增支持 https 模式 ([e6ebf98](https://github.com/lzwme/static-server/commit/e6ebf9826670d405687cbd93d4bf70f4bd120349))
+* 增加 https 模式下随机生成 ssl 证书 ([a1c68ea](https://github.com/lzwme/static-server/commit/a1c68eaeabe9262e312e0a334d35697ad53b0db1))
+
 ### [0.0.4](https://github.com/lzwme/static-server/compare/v0.0.3...v0.0.4) (2022-09-23)
 
 
