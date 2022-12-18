@@ -7,41 +7,34 @@
  */
 
 import { resolve } from 'node:path';
-import { createServer } from 'node:https';
+import { createServer, type ServerOptions } from 'node:https';
 import { color } from 'console-log-colors';
 import express, { type Express } from 'express';
 import { execSync } from 'child_process';
 import { getConfig, SSConfig } from './config';
 import { proxyByExpress } from './proxy/express-proxy';
 import { logger } from './get-logger';
-import { getCert } from './lib/get-cert';
 
 export async function initServer(options?: SSConfig): Promise<Express> {
-  options = getConfig(true, options);
+  options = await getConfig(!options, options);
 
   const app = express();
-  const { port = 8890, host = 'localhost' } = options;
+  const { port = 8888, host = 'localhost' } = options;
   const url = `http${options.https ? 's' : ''}://${host}:${port}`;
-  const baseDir = resolve(process.cwd(), typeof options.baseDir === 'string' ? options.baseDir : '.');
-
-  if (options.https && !options.ssl!.cert) {
-    const info = await getCert(host);
-    options.ssl!.key = Buffer.from(info.certKey);
-    options.ssl!.cert = Buffer.from(info.certCrt);
-  }
+  const rootDir = resolve(process.cwd(), typeof options.rootDir === 'string' ? options.rootDir : '.');
 
   // @see https://www.expressjs.com.cn/4x/api.html#express.static
   app.use(
-    express.static(baseDir, {
+    express.static(rootDir, {
       // extensions: ['html', 'htm'],
     })
   );
 
-  proxyByExpress(app);
+  await proxyByExpress(app);
 
   const onListen = () => {
-    logger.log(color.green(`Start : `.padStart(15, ' ')), color.cyanBright(url));
-    logger.log(color.green(`ROOT DIR : `.padStart(15, ' ')), color.cyanBright(baseDir));
+    logger.log(color.green(`START : `.padStart(15, ' ')), color.cyanBright(url));
+    logger.log(color.green(`ROOT DIR : `.padStart(15, ' ')), color.cyanBright(rootDir));
   };
 
   if (options.https) {

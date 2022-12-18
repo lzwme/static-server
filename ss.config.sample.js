@@ -1,7 +1,10 @@
 /** @type {import('@lzwme/sserver').SSConfig} */
 module.exports = {
-  port: 8890,
-  baseDir: '.',
+  port: 8888,
+  port: 8888,
+  https: false,
+  sslCache: '',
+  rootDir: '.',
   proxyConfig: [
     // 内网代理企业微信机器人接口示例
     {
@@ -15,4 +18,4 @@ module.exports = {
       },
     },
   ],
-}
+};

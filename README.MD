@@ -9,27 +9,21 @@
 [![GitHub forks][forks-badge]][forks-url]
 [![GitHub stars][stars-badge]][stars-url]
 
-一个基于 nodejs 的简易静态服务器，方便随时开发调试使用。
+一个基于 Node.js 的简易静态服务器，用于辅助开发调试随启随用。
 
 ## 安装
-
-安装：
 
 ```bash
 # 全局安装
 npm i -g @lzwme/sserver
-# 测试
 sserver -h
 
-# 项目中安装
+# 或者在项目中安装
 npm i -D @lzwme/sserver
-yarn add -D @lzwme/sserver
-```
+npm exec ss -- -h
 
-也可以不安装，直接使用 `npx` 执行：
-
-```bash
-npx @lzwme/sserver -d ./dist
+# 或者直接使用 `npx`
+npx @lzwme/sserver -h
 ```
 
 ## 使用
@@ -37,21 +31,39 @@ npx @lzwme/sserver -d ./dist
 示例：
 
 ```bash
-# 已当前目录下的 dist 作为静态目录
-sserver -d ./dist
+# 以当前目录下的 dist 作为静态根目录
+ss -d ./dist
+
+# 启用 https
+ss --https
+
+# 启用 https，指定域名(默认为 localhost)
+ss -H --host local.lzw.me
+
+# 启用 https，并保存默认生成的 ssl 证书
+ss -H --ssl-cache ./cache
 ```
 
 ### 配置代理转发
 
-支持通过配置文件 `ss.config.js` 指定代理转发信息。示例：
+支持通过配置文件 `ss.config.js` 指定代理转发等详细配置规则。
+
+```bash
+# 在当前目录初始化一个 ss.config.js 配置文件
+ss init
+```
+
+配置文件内容示例：
 
 ```js
 // ss.config.js
 
 /** @type {import('@lzwme/sserver').SSConfig} */
 module.exports = {
-  port: 8890,
-  baseDir: './dist',
+  port: 8888,
+  https: false,
+  sslCache: '',
+  rootDir: '.',
   // 代理转发配置
   proxyConfig: [
     // 内网代理企业微信机器人接口示例
@@ -74,10 +86,15 @@ module.exports = {
 本地二次开发：
 
 ```bash
-git clone https://github.com/lzwme/static-server
+git clone https://github.com/lzwme/static-server.git
 pnpm install
-npm link
+pnpm build
+
+# dev
 pnpm dev
+
+# global link
+npm link
 ```
 
 或者 fork 本项目进行代码贡献。

@@ -4,8 +4,8 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 import { getConfig } from '../config';
 import { logger } from '../get-logger';
 
-export function proxyByExpress(app: Express) {
-  const { proxyConfig } = getConfig();
+export async function proxyByExpress(app: Express) {
+  const { proxyConfig } = await getConfig();
   if (!proxyConfig?.length) return;
 
   proxyConfig.forEach(({ api, config }) => {
