@@ -43,7 +43,8 @@
     "dev": "ts-node -T src/cli.ts",
     "build": "npm run clean && tsc",
     "clean": "flh rm -f dist",
-    "version": "standard-version"
+    "version": "standard-version",
+    "release": "npm run build"
   },
   "dependencies": {
     "@lzwme/fe-utils": "^1.3.2",
