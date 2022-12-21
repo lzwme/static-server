@@ -1,8 +1,9 @@
 import { type Options } from 'http-proxy-middleware';
 import { type ServerOptions } from 'node:https';
+import { type Response } from 'express';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, Stats } from 'node:fs';
 import { assign } from '@lzwme/fe-utils';
 import { logger } from './get-logger';
 import { getCert } from './lib/get-cert';
@@ -26,6 +27,14 @@ export interface SSConfig {
   ssl?: ServerOptions;
   /** 自动生成 ssl 的缓存目录 */
   sslCache?: string;
+  /** 设置公共自定义 headers */
+  headers?: Record<string, string | string[] | undefined>;
+  /** 按请求自定义 headers。返回结果与 headers 内容合并 */
+  setHeaders?: (
+    res: Response<any, Record<string, any>>,
+    path: string,
+    stat: Stats
+  ) => Record<string, string | string[] | undefined>;
 }
 
 const ssConfig: SSConfig = {
@@ -36,6 +45,14 @@ const ssConfig: SSConfig = {
   ssl: {
     rejectUnauthorized: false,
     requestCert: true,
+  },
+  headers: {
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Allow-Headers': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Origin': '*',
+    'Cross-Origin-Embedder-Policy': 'require-corp',
+    'Cross-Origin-Opener-Policy': 'same-origin',
   },
 };
 
