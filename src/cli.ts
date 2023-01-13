@@ -22,6 +22,7 @@ program
   .option('--key <filepath>', 'https 模式使用的 ssl key。默认根据 host 随机生成')
   .option('--ssl-cache <dir>', '随机生成 cert 证书缓存的路径。未指定则不缓存')
   .option('-o, --open', '启动后是否打开静态服务器首页')
+  .option('--coop-coep', '启用跨域隔离', false)
   .option('--log [dirpath]', `指定日志路径`)
   .option('--debug', `开启调试模式。`, false)
   .action(async opts => {
@@ -31,6 +32,13 @@ program
     if (opts.debug) {
       logger.updateOptions({ levelType: 'debug' });
       logger.debug(opts);
+    }
+
+    if (opts.coopCoep) {
+      opts.headers = {
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'require-corp',
+      };
     }
 
     getConfig(false, opts).then(() => initServer());

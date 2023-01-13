@@ -51,8 +51,7 @@ const ssConfig: SSConfig = {
     'Access-Control-Allow-Headers': '*',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
     'Access-Control-Allow-Origin': '*',
-    'Cross-Origin-Embedder-Policy': 'require-corp',
-    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Opener-Policy': 'cross-origin',
   },
 };
 
