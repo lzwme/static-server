@@ -1,11 +1,10 @@
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { program } from 'commander';
 import { color } from 'console-log-colors';
 import { getConfig } from './config';
 import { logger } from './get-logger';
 import { initServer } from './static-server';
-import { resolve } from 'node:path';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { getCert } from './lib/get-cert';
 
 const pkg = require('../package.json');
 
