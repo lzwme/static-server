@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.0.6](https://github.com/lzwme/static-server/compare/v0.0.5...v0.0.6) (2023-02-03)
+
+
+### Features
+
+* 新增 headers 选项，支持自定义 headers，默认配置允许跨域请求 ([2c240d1](https://github.com/lzwme/static-server/commit/2c240d1c550bb320798f87079a1432055d55a69e))
+* 新增 php-cgi 代理调用支持 ([9009cfc](https://github.com/lzwme/static-server/commit/9009cfce00a2e92e5e941761abdeb5d6ba3ee5fe))
+
+
+### Bug Fixes
+
+* fix for config sample ([6958684](https://github.com/lzwme/static-server/commit/6958684449ba44ea20d566e91c95c15b774efc2d))
+
 ### [0.0.5](https://github.com/lzwme/static-server/compare/v0.0.4...v0.0.5) (2022-12-18)
 
 
