@@ -9,6 +9,8 @@ import { logger } from './get-logger';
 import { getCert } from './lib/get-cert';
 
 export interface SSConfig {
+  /** 是否开启目录列表 */
+  autoindex?: boolean;
   /** 自定义 app 应用逻辑 */
   custom?(app: Express, config: SSConfig, logger: NLogger, c: typeof color): void;
   /** host 地址。默认为 127.0.0.1 */

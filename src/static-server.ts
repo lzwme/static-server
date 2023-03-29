@@ -7,9 +7,9 @@
  */
 
 import { createServer } from 'node:https';
+import { execSync } from 'node:child_process';
 import { color } from 'console-log-colors';
 import express, { type Express } from 'express';
-import { execSync } from 'child_process';
 import { assign } from '@lzwme/fe-utils';
 import { getConfig, SSConfig } from './config';
 import { logger } from './get-logger';
@@ -48,6 +48,17 @@ export async function initServer(c?: SSConfig): Promise<Express> {
       },
     })
   );
+
+  if (config.autoindex) {
+    // @ts-expect-error
+    const serveIndex = await import('serve-index');
+    app.use(
+      serveIndex.default(rootDir, {
+        icons: true,
+        hidden: true,
+      })
+    );
+  }
 
   const onListen = () => {
     logger.log(color.green(`Runing at : `.padStart(15, ' ')), color.cyanBright(url));

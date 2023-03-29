@@ -14,6 +14,7 @@ program
   .description(color.yellow(pkg.description) + ` [version@${color.cyanBright(pkg.version)}]`)
   // .option('-c, --config-path [filepath]', `配置文件 ${color.yellow(config.configPath)} 的路径`)
   .option('-d, --root-dir [dirpath]', '静态服务器的根目录路径')
+  .option('-a, --autoindex', '是否开启目录列表浏览')
   .option('-p, --port [port]', '端口号')
   .option('--host <hostname>', '域名。默认为 `localhost`')
   .option('-H, --https', '启用 https 模式')
