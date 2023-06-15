@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.0.7](https://github.com/lzwme/static-server/compare/v0.0.6...v0.0.7) (2023-06-15)
+
+
+### Features
+
+* 新增 autoindex 参数，支持目录列表浏览 ([be7a8a3](https://github.com/lzwme/static-server/commit/be7a8a30739407c27b45de5a71b8b7a17f9639da))
+
 ### [0.0.6](https://github.com/lzwme/static-server/compare/v0.0.5...v0.0.6) (2023-02-03)
 
 
