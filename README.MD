@@ -11,12 +11,17 @@
 
 一个基于 Node.js 的简易静态服务器，用于辅助开发调试随启随用。
 
+```bash
+# 快速启动一个静态服务器
+npx @lzwme/sserver -d ./dist
+```
+
 ## 安装
 
 ```bash
 # 全局安装
 npm i -g @lzwme/sserver
-sserver -h
+ss -h
 
 # 或者在项目中安装
 npm i -D @lzwme/sserver
