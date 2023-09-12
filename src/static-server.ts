@@ -15,12 +15,14 @@ import { getConfig, SSConfig } from './config';
 import { logger } from './get-logger';
 import { proxyByExpress } from './proxy/express-proxy';
 import { phpProxy } from './proxy/php-proxy';
+import { getIp } from './lib/utils.js';
 
 export async function initServer(c?: SSConfig): Promise<Express> {
   const app = express();
   const config = await getConfig(!c, c);
   const { rootDir = '.', port = 8888, host = 'localhost' } = config;
   const url = `http${config.https ? 's' : ''}://${host}:${port}`;
+  const ipUrl = `http://${getIp()}:${port}`;
 
   app.use((_req, res, next) => {
     Object.entries(config.headers!).forEach(([key, value]) => res.header(key, value));
@@ -61,8 +63,9 @@ export async function initServer(c?: SSConfig): Promise<Express> {
   }
 
   const onListen = () => {
-    logger.log(color.green(`Runing at : `.padStart(15, ' ')), color.cyanBright(url));
-    logger.log(color.green(`ROOT DIR : `.padStart(15, ' ')), color.cyanBright(rootDir));
+    logger.log(color.green(`ROOT DIR : `.padStart(15, ' ')), color.greenBright(rootDir));
+    logger.log(color.green(`Local/Host : `.padStart(15, ' ')), color.cyanBright(url));
+    logger.log(color.green(`Network[IP] : `.padStart(15, ' ')), color.cyanBright(ipUrl));
   };
 
   if (config.https) {
