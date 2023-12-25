@@ -2,7 +2,7 @@ import { networkInterfaces, type NetworkInterfaceInfo } from "os";
 
 export function getIp() {
   const nif = networkInterfaces();
-  const list: NetworkInterfaceInfo[] = [];
+  let list: NetworkInterfaceInfo[] = [];
 
   for (const key of Object.keys(nif)) {
     for (const item of nif[key]!) {
@@ -10,6 +10,13 @@ export function getIp() {
     }
   }
 
+  list = list.sort((a, b) => {
+    if (b.address.startsWith('172.')) return -1;
+    return 0;
+  });
+
   // console.log(list);
   return list[0]?.address;
 }
+
+// console.log(getIp());
