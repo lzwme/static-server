@@ -23,6 +23,8 @@ program
   .option('--ssl-cache <dir>', '随机生成 cert 证书缓存的路径。未指定则不缓存')
   .option('-o, --open', '启动后是否打开静态服务器首页')
   .option('--coop-coep', '启用跨域隔离', false)
+  .option('--cors', '是否启用 cors。会全局设置 cors 的 header')
+  .option('--no-cors', '是否禁用 cors')
   .option('--log [dirpath]', `指定日志路径`)
   .option('--debug', `开启调试模式。`, false)
   .action(async opts => {

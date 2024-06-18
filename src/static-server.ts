@@ -1,8 +1,8 @@
 /*
  * @Author: lzw
  * @Date: 2021-05-28 16:24:40
- * @LastEditors: lzw
- * @LastEditTime: 2023-02-03 13:32:07
+ * @LastEditors: renxia
+ * @LastEditTime: 2024-06-18 11:25:13
  * @Description:
  */
 
@@ -11,7 +11,7 @@ import { execSync } from 'node:child_process';
 import { color } from 'console-log-colors';
 import express, { type Express } from 'express';
 import { assign } from '@lzwme/fe-utils';
-import { getConfig, SSConfig } from './config';
+import { getConfig, type SSConfig } from './config';
 import { logger } from './get-logger';
 import { proxyByExpress } from './proxy/express-proxy';
 import { phpProxy } from './proxy/php-proxy';
@@ -24,7 +24,8 @@ export async function initServer(c?: SSConfig): Promise<Express> {
   const url = `http${config.https ? 's' : ''}://${host}:${port}`;
   const ipUrl = `http://${getIp()}:${port}`;
 
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
+    if (config.cors) config.headers!['Access-Control-Allow-Origin'] = req.header('origin') || '*';
     Object.entries(config.headers!).forEach(([key, value]) => res.header(key, value));
     next();
   });

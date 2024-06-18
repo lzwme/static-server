@@ -41,6 +41,8 @@ export interface SSConfig {
   ssl?: ServerOptions;
   /** 自动生成 ssl 的缓存目录 */
   sslCache?: string;
+  /** 是否默认开启 cors 设置 */
+  cors?: boolean;
   /** 设置公共自定义 headers */
   headers?: Record<string, string | string[] | undefined>;
   /** 按请求自定义 headers。返回结果与 headers 内容合并 */
@@ -60,17 +62,12 @@ const ssConfig: SSConfig = {
   },
   proxyConfig: [],
   rootDir: '.',
+  cors: true,
   ssl: {
     rejectUnauthorized: false,
     requestCert: true,
   },
-  headers: {
-    'Access-Control-Allow-Credentials': 'true',
-    'Access-Control-Allow-Headers': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Origin': '*',
-    'Cross-Origin-Opener-Policy': 'cross-origin',
-  },
+  headers: {},
 };
 
 export async function getConfig(useCache = true, cfg?: SSConfig) {
@@ -85,6 +82,16 @@ export async function getConfig(useCache = true, cfg?: SSConfig) {
 
   if (ssConfig.log) {
     logger.setLogDir(typeof ssConfig.log === 'boolean' ? resolve(homedir(), '.sserver/log.log') : ssConfig.log);
+  }
+
+  if (ssConfig.cors) {
+    Object.assign(ssConfig.headers!, {
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+      'Access-Control-Allow-Origin': '*',
+      'Cross-Origin-Opener-Policy': 'cross-origin',
+    });
   }
 
   if (ssConfig.https && ssConfig.ssl) {
