@@ -12,7 +12,7 @@ export interface SSConfig {
   /** 是否开启目录列表 */
   autoindex?: boolean;
   /** 自定义 app 应用逻辑 */
-  custom?(app: Express, config: SSConfig, logger: NLogger, c: typeof color): void;
+  custom?(app: Express, config: SSConfig, logger: NLogger, c: Partial<typeof color>): void;
   /** host 地址。默认为 127.0.0.1 */
   host?: string;
   /** 是否开启日志记录。默认为 false。若设置为 true 则默认为 ~/.sserver/log.log；若为字符串，则设置为日志路径 */

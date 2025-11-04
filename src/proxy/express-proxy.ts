@@ -9,18 +9,23 @@ export async function proxyByExpress(app: Express) {
   if (!proxyConfig?.length) return;
 
   proxyConfig.forEach(({ api, config }) => {
-    const onProxyReq = config.onProxyReq;
-    config.onProxyReq = (pReq, req, res, options) => {
-      const now = new Date();
-      logger.log(
-        now.toTimeString().slice(0, 8) + '.' + String(now.getMilliseconds()).padStart(3, '0'),
-        color.gray('[proxyReq]'),
-        color.cyan(req.originalUrl),
-        '=>',
-        color.cyanBright(`${pReq.protocol}${pReq.host}${pReq.path}`)
-      );
+    // @ts-ignore 兼容 2.0 api
+    const onProxyReq = config.on?.proxyReq || config.onProxyReq;
 
-      if (onProxyReq) onProxyReq(pReq, req, res, options);
+    config.on = {
+      ...(config.on || {}),
+      proxyReq: (pReq, req, res, options) => {
+        const now = new Date();
+        logger.log(
+          now.toTimeString().slice(0, 8) + '.' + String(now.getMilliseconds()).padStart(3, '0'),
+          color.gray('[proxyReq]'),
+          color.cyan(req.url),
+          '=>',
+          color.cyanBright(`${pReq.protocol}${pReq.host}${pReq.path}`)
+        );
+
+        if (onProxyReq) onProxyReq(pReq, req, res, options);
+      },
     };
 
     app.use(api, createProxyMiddleware(config));
