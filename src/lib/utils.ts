@@ -1,4 +1,4 @@
-import { networkInterfaces, type NetworkInterfaceInfo } from "os";
+import { type NetworkInterfaceInfo, networkInterfaces } from 'node:os';
 
 export function getIp() {
   const nif = networkInterfaces();
@@ -10,7 +10,7 @@ export function getIp() {
     }
   }
 
-  list = list.sort((a, b) => {
+  list = list.sort((_a, b) => {
     if (b.address.startsWith('172.')) return -1;
     return 0;
   });

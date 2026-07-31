@@ -11,7 +11,7 @@ const pkg = require('../package.json');
 program
   .aliases(['ss'])
   .version(pkg.version, '-v, --version')
-  .description(color.yellow(pkg.description) + ` [version@${color.cyanBright(pkg.version)}]`)
+  .description(`${color.yellow(pkg.description)} [version@${color.cyanBright(pkg.version)}]`)
   // .option('-c, --config-path [filepath]', `配置文件 ${color.yellow(config.configPath)} 的路径`)
   .option('-d, --root-dir [dirpath]', '静态服务器的根目录路径')
   .option('-a, --autoindex', '是否开启目录列表浏览')
@@ -26,8 +26,10 @@ program
   .option('--cors', '是否启用 cors。会全局设置 cors 的 header')
   .option('--no-cors', '是否禁用 cors')
   .option('--log [dirpath]', `指定日志路径`)
+  .option('--localsend', '开启 localsend 局域网文件传输功能')
+  .option('--localsend-dir <dir>', 'localsend 文件存储目录。默认 ~/.static-server/localsend，可用环境变量 SS_LOCALSEND_DIR 覆盖')
   .option('--debug', `开启调试模式。`, false)
-  .action(async opts => {
+  .action(async (opts) => {
     if (opts.cert) opts.ssl.cert = opts.cert;
     if (opts.key) opts.ssl.key = opts.key;
 
@@ -41,6 +43,10 @@ program
         'Cross-Origin-Opener-Policy': 'same-origin',
         'Cross-Origin-Embedder-Policy': 'require-corp',
       };
+    }
+
+    if (opts.localsend) {
+      opts.localsend = { enabled: true, dir: opts.localsendDir || undefined };
     }
 
     getConfig(false, opts).then(() => initServer());

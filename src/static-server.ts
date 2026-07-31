@@ -6,16 +6,17 @@
  * @Description:
  */
 
-import { createServer } from 'node:https';
 import { execSync } from 'node:child_process';
+import { createServer } from 'node:https';
+import { assign } from '@lzwme/fe-utils';
 import { color } from 'console-log-colors';
 import express, { type Express } from 'express';
-import { assign } from '@lzwme/fe-utils';
 import { getConfig, type SSConfig } from './config';
 import { logger } from './get-logger';
+import { getIp } from './lib/utils.js';
+import { initLocalsend } from './localsend';
 import { proxyByExpress } from './proxy/express-proxy';
 import { phpProxy } from './proxy/php-proxy';
-import { getIp } from './lib/utils.js';
 
 export async function initServer(c?: SSConfig): Promise<Express> {
   const app = express();
@@ -37,6 +38,11 @@ export async function initServer(c?: SSConfig): Promise<Express> {
   await phpProxy(app, config);
   await proxyByExpress(app);
 
+  // localsend 局域网文件传输
+  if (config.localsend) {
+    await initLocalsend(app);
+  }
+
   // @see https://www.expressjs.com.cn/4x/api.html#express.static
   app.use(
     express.static(rootDir, {
@@ -49,7 +55,7 @@ export async function initServer(c?: SSConfig): Promise<Express> {
           Object.entries(headers).forEach(([key, value]) => res.header(key, value));
         }
       },
-    })
+    }),
   );
 
   if (config.autoindex) {
@@ -59,7 +65,7 @@ export async function initServer(c?: SSConfig): Promise<Express> {
       serveIndex.default(rootDir, {
         icons: true,
         hidden: true,
-      })
+      }),
     );
   }
 

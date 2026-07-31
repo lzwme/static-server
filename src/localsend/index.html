@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LocalSend · 局域网文件传输</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/qr-code-styling@1/lib/qr-code-styling.js"></script>
+<style>
+  #fileInput { display: none; }
+  #toast { transition: opacity .25s; }
+  #toast.hidden { opacity: 0; pointer-events: none; }
+  #pageQr canvas { width: 100% !important; height: auto !important; display: block; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+</style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-200">
+<div class="max-w-5xl mx-auto px-3 sm:px-4 py-6 sm:py-8">
+
+  <header class="flex items-center justify-between gap-3 sm:gap-4 mb-6 sm:mb-8 flex-wrap">
+    <div>
+      <h1 class="text-xl sm:text-2xl font-bold flex items-center gap-2">
+        <span class="inline-block w-2.5 h-2.5 sm:w-3 sm:h-3 bg-emerald-400 rounded-full animate-pulse"></span>
+        LocalSend
+      </h1>
+      <p class="text-xs sm:text-sm text-slate-400 mt-1">局域网文件传输 · 同网段设备扫码即可访问</p>
+    </div>
+    <div class="text-left sm:text-right">
+      <div class="text-xs text-slate-500">本机访问地址</div>
+      <div id="pageUrl" class="text-emerald-400 font-mono text-xs sm:text-sm break-all"></div>
+    </div>
+  </header>
+
+  <section class="grid md:grid-cols-[auto_1fr] gap-5 sm:gap-6 items-start mb-6 sm:mb-8">
+    <div id="pageQrCard" class="bg-slate-900 border border-slate-700 rounded-2xl p-3 sm:p-4 flex flex-col items-center gap-3 w-full sm:w-fit mx-auto md:mx-0 cursor-pointer hover:border-emerald-500/50 transition-colors group">
+      <div class="text-xs text-slate-400 group-hover:text-emerald-400 transition-colors">手机扫码访问页面（点击放大）</div>
+      <div id="pageQr" class="bg-white p-2 rounded-lg w-40 sm:w-36 flex items-center justify-center"></div>
+      <button id="openPageBtn" class="text-xs text-slate-400 hover:text-white transition">在新窗口打开页面</button>
+    </div>
+
+    <div>
+      <div id="dropZone" class="border-2 border-dashed border-slate-600 hover:border-emerald-400 rounded-2xl p-6 sm:p-8 text-center transition cursor-pointer select-none">
+        <div class="text-3xl sm:text-4xl mb-2">📤</div>
+        <p class="font-medium text-sm sm:text-base text-slate-200">点击选择或拖拽文件到此处上传</p>
+        <p class="text-[11px] sm:text-xs text-slate-500 mt-1">支持多文件同时上传 · 文件保存在本机 · 实时显示传输进度</p>
+        <input id="fileInput" type="file" multiple />
+      </div>
+      <div id="uploadList" class="mt-4 space-y-2"></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+      <h2 class="font-semibold text-base sm:text-lg">文件列表 <span id="fileCount" class="text-xs sm:text-sm text-slate-400 font-normal"></span></h2>
+      <div class="flex gap-2 text-xs sm:text-sm">
+        <select id="sortSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 outline-none cursor-pointer">
+          <option value="time">按时间排序</option>
+          <option value="size">按大小排序</option>
+        </select>
+        <button id="orderBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 hover:bg-slate-700 transition">↓ 降序</button>
+      </div>
+    </div>
+    <div id="batchBar" class="hidden mb-2 px-3 sm:px-4 py-2 bg-slate-900 border border-slate-800 rounded-2xl flex items-center gap-2 sm:gap-3 text-xs">
+      <label class="flex items-center gap-1.5 cursor-pointer select-none text-slate-400 hover:text-slate-200 shrink-0">
+        <input type="checkbox" id="selectAll" class="accent-emerald-500 w-3.5 h-3.5">
+        <span class="hidden sm:inline">全选</span>
+      </label>
+      <span id="selectedCount" class="text-slate-500 hidden shrink-0"><em class="text-emerald-400 not-italic">0</em><span class="hidden sm:inline"> 项已选</span></span>
+      <div class="flex-1 hidden sm:block"></div>
+      <button id="batchDownload" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量下载">
+        <span class="sm:hidden">📥</span><span class="hidden sm:inline">📥 批量下载</span>
+      </button>
+      <button id="batchDelete" disabled class="px-2 py-1 rounded text-red-400 hover:bg-red-500/10 border border-red-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量删除">
+        <span class="sm:hidden">🗑</span><span class="hidden sm:inline">🗑 批量删除</span>
+      </button>
+    </div>
+    <div id="fileList" class="bg-slate-900 border border-slate-800 rounded-2xl divide-y divide-slate-800"></div>
+    <div id="emptyTip" class="hidden text-center text-slate-500 py-16">暂无文件，上传第一个文件开始传输吧</div>
+  </section>
+</div>
+
+<!-- 二维码弹窗 -->
+<div id="qrModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 flex flex-col items-center gap-4 max-w-sm w-full">
+    <div class="text-sm text-slate-300">手机扫码</div>
+    <div id="modalQr" class="bg-white p-2 rounded-lg"></div>
+    <div id="modalText" class="text-xs text-slate-400 font-mono break-all max-w-xs text-center"></div>
+    <button id="closeModal" class="text-sm bg-slate-700 hover:bg-slate-600 rounded-lg px-4 py-1.5 transition">关闭</button>
+  </div>
+</div>
+
+<!-- 文本预览弹窗 -->
+<div id="previewModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 max-w-2xl w-full max-h-[80vh] flex flex-col gap-3">
+    <div class="flex items-center justify-between gap-3">
+      <div id="previewTitle" class="text-sm font-medium truncate"></div>
+      <button id="closePreview" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1 transition shrink-0">关闭</button>
+    </div>
+    <pre id="previewContent" class="whitespace-pre-wrap break-all text-xs font-mono bg-slate-950 border border-slate-800 rounded-xl p-4 overflow-auto flex-1 text-slate-300"></pre>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] rounded-xl px-5 py-3 text-sm shadow-xl border border-white/10"></div>
+
+<script>
+(function () {
+  'use strict';
+  var API = '/localsend/api';
+  var $ = function (id) { return document.getElementById(id); };
+  var pageUrl = location.origin + location.pathname;
+  var sortType = 'time';
+  var sortOrder = 'desc';
+  var modalQrCode = null;
+  var selected = {};
+  var fileItems = [];
+
+  $('pageUrl').textContent = pageUrl;
+  $('pageUrl').title = pageUrl;
+  if (typeof QRCodeStyling !== 'undefined') {
+    var pageQrCode = new QRCodeStyling({
+      width: 220, height: 220, type: 'canvas', data: pageUrl, margin: 0,
+      dotsOptions: { type: 'rounded', color: '#10b981' },
+      backgroundOptions: { color: '#ffffff' },
+      cornersSquareOptions: { type: 'extra-rounded', color: '#10b981' },
+      cornersDotOptions: { type: 'dot', color: '#10b981' },
+    });
+    pageQrCode.append($('pageQr'));
+  }
+
+  function fmtSize(n) {
+    if (n < 1024) return n + ' B';
+    var units = ['KB', 'MB', 'GB', 'TB'];
+    var i = -1;
+    do { n /= 1024; i += 1; } while (n >= 1024 && i < units.length - 1);
+    return n.toFixed(1) + ' ' + units[i];
+  }
+  function fmtTime(ms) {
+    var d = new Date(ms);
+    var p = function (x) { return String(x).padStart(2, '0'); };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function toast(msg, type) {
+    var el = $('toast');
+    el.textContent = msg;
+    el.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] rounded-xl px-4 sm:px-5 py-2.5 sm:py-3 text-xs sm:text-sm shadow-xl border border-white/10 ' + (type === 'ok' ? 'bg-emerald-600/90' : type === 'err' ? 'bg-red-600/90' : 'bg-slate-800/90');
+    el.classList.remove('hidden');
+    clearTimeout(el._t);
+    el._t = setTimeout(function () { el.classList.add('hidden'); }, 2600);
+  }
+  function copyText(text) {
+    var done = function () { toast('已复制到剪贴板', 'ok'); };
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).then(done).catch(function () { toast('复制失败', 'err'); });
+    }
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) { toast('复制失败', 'err'); }
+    document.body.removeChild(ta);
+  }
+
+  var iconMap = {
+    jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️', webp: '🖼️', svg: '🖼️', bmp: '🖼️', ico: '🖼️',
+    mp4: '🎬', mov: '🎬', avi: '🎬', mkv: '🎬', webm: '🎬', flv: '🎬',
+    mp3: '🎵', wav: '🎵', flac: '🎵', m4a: '🎵', ogg: '🎵',
+    zip: '🗜️', rar: '🗜️', '7z': '🗜️', tar: '🗜️', gz: '🗜️', tgz: '🗜️',
+    pdf: '📕', doc: '📘', docx: '📘', xls: '📊', xlsx: '📊', ppt: '📊', pptx: '📊', csv: '📊',
+    txt: '📃', md: '📃', html: '🌐', htm: '🌐', js: '💻', ts: '💻', json: '🧩', css: '🎨', xml: '🧾', log: '📝'
+  };
+  function fileIcon(name) {
+    var ext = (name.split('.').pop() || '').toLowerCase();
+    return iconMap[ext] || '📄';
+  }
+  function btn(label, act, danger, icon) {
+    var cls = danger ? 'text-red-400 hover:bg-red-500/10 border-red-500/30' : 'text-slate-300 hover:bg-slate-700/70 border-slate-600/60';
+    return '<button data-act="' + act + '" title="' + label + '" class="px-1.5 sm:px-2.5 py-1 rounded-lg text-xs border transition ' + cls + '">' +
+      '<span class="sm:hidden" aria-hidden="true">' + icon + '</span>' +
+      '<span class="hidden sm:inline">' + label + '</span>' +
+      '</button>';
+  }
+
+  function loadFiles() {
+    return fetch(API + '/list?sort=' + sortType + '&order=' + sortOrder)
+      .then(function (r) { return r.json(); })
+      .then(function (json) { renderList(json.data || []); })
+      .catch(function () { toast('文件列表加载失败', 'err'); });
+  }
+  function updateBatchUI() {
+    var names = Object.keys(selected).filter(function(n) { return selected[n]; });
+    var count = names.length;
+    var total = fileItems.length;
+    $('batchBar').classList.toggle('hidden', total === 0);
+    $('selectAll').checked = total > 0 && count === total;
+    $('selectAll').indeterminate = count > 0 && count < total;
+    if (count > 0) {
+      $('selectedCount').classList.remove('hidden');
+      $('selectedCount').querySelector('em').textContent = count;
+      $('batchDownload').disabled = false;
+      $('batchDelete').disabled = false;
+    } else {
+      $('selectedCount').classList.add('hidden');
+      $('batchDownload').disabled = true;
+      $('batchDelete').disabled = true;
+    }
+  }
+  function renderList(list) {
+    fileItems = list;
+    // 保留仍在列表中的文件的选中状态
+    var keep = {};
+    list.forEach(function(f) { if (selected[f.name]) keep[f.name] = true; });
+    selected = keep;
+
+    var wrap = $('fileList');
+    wrap.innerHTML = '';
+    $('emptyTip').classList.toggle('hidden', list.length > 0);
+    $('fileCount').textContent = '(' + list.length + ')';
+    updateBatchUI();
+    list.forEach(function (f) {
+      var div = document.createElement('div');
+      div.className = 'flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2.5 sm:py-3 hover:bg-slate-800/60 transition flex-wrap' + (selected[f.name] ? ' bg-slate-800/40' : '');
+      div.innerHTML =
+        '<label class="flex items-center shrink-0 cursor-pointer"><input type="checkbox" class="file-check accent-emerald-500 w-3.5 h-3.5" data-name="' + escapeHtml(f.name) + '"' + (selected[f.name] ? ' checked' : '') + '></label>' +
+        '<span class="text-xl sm:text-2xl shrink-0">' + fileIcon(f.name) + '</span>' +
+        '<div class="min-w-0 flex-1">' +
+          '<div class="text-sm truncate text-slate-200" title="' + escapeHtml(f.name) + '">' + escapeHtml(f.name) + '</div>' +
+          '<div class="text-xs text-slate-500 mt-0.5">' + fmtSize(f.size) + ' · ' + fmtTime(f.mtime) + '</div>' +
+        '</div>' +
+        '<div class="flex items-center gap-1 sm:gap-1.5 shrink-0 justify-end w-full sm:w-auto">' +
+          btn('预览', 'preview', false, '👁') + btn('下载', 'download', false, '⬇️') + btn('复制', 'copy', false, '📋') + btn('扫码', 'qr', false, '📱') + btn('删除', 'delete', true, '🗑') +
+        '</div>';
+      Array.prototype.forEach.call(div.querySelectorAll('button'), function (b) { b.dataset.name = f.name; });
+      wrap.appendChild(div);
+    });
+  }
+
+  function uploadFiles(fileList) {
+    Array.prototype.forEach.call(fileList, uploadOne);
+  }
+  function uploadOne(file) {
+    var fd = new FormData();
+    fd.append('files', file);
+    var row = document.createElement('div');
+    row.className = 'bg-slate-800/70 border border-slate-700 rounded-xl px-4 py-3';
+    row.innerHTML =
+      '<div class="flex items-center justify-between gap-3 mb-2">' +
+        '<span class="text-xs truncate text-slate-300">' + escapeHtml(file.name) + '</span>' +
+        '<span class="text-xs text-emerald-400 shrink-0 font-mono" data-pct>0%</span>' +
+      '</div>' +
+      '<div class="h-1.5 bg-slate-700 rounded-full overflow-hidden">' +
+        '<div class="h-full bg-emerald-500 transition-all duration-200" style="width:0%"></div>' +
+      '</div>' +
+      '<div class="flex justify-between mt-1.5 text-[10px] text-slate-500"><span data-status>等待上传…</span><span data-speed class="font-mono"></span></div>';
+    $('uploadList').appendChild(row);
+    var pctEl = row.querySelector('[data-pct]');
+    var barEl = row.querySelector('.h-full');
+    var statusEl = row.querySelector('[data-status]');
+    var speedEl = row.querySelector('[data-speed]');
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', API + '/upload');
+    var lastLoaded = 0;
+    var lastTime = Date.now();
+    xhr.upload.onprogress = function (e) {
+      if (!e.lengthComputable) return;
+      var pct = Math.round(e.loaded / e.total * 100);
+      pctEl.textContent = pct + '%';
+      barEl.style.width = pct + '%';
+      var now = Date.now();
+      var dt = (now - lastTime) / 1000;
+      if (dt > 0.3) {
+        speedEl.textContent = fmtSize((e.loaded - lastLoaded) / dt) + '/s';
+        lastLoaded = e.loaded;
+        lastTime = now;
+      }
+    };
+    xhr.onload = function () {
+      var ok = xhr.status === 200;
+      var json = null;
+      try { json = JSON.parse(xhr.responseText); } catch (e) { json = null; }
+      ok = ok && json && json.code === 0;
+      barEl.style.width = '100%';
+      if (ok) {
+        barEl.className = 'h-full bg-emerald-500';
+        statusEl.textContent = '上传完成';
+        pctEl.textContent = '100%';
+        toast('上传完成：' + file.name, 'ok');
+        loadFiles();
+        setTimeout(function () { row.remove(); }, 1500);
+      } else {
+        barEl.className = 'h-full bg-red-500';
+        statusEl.textContent = (json && json.msg) || '上传失败';
+        toast((json && json.msg) || '上传失败', 'err');
+      }
+    };
+    xhr.onerror = function () {
+      barEl.className = 'h-full bg-red-500';
+      statusEl.textContent = '网络错误';
+      toast('上传失败：' + file.name, 'err');
+    };
+    xhr.send(fd);
+  }
+
+  function downloadFile(name) {
+    var url = API + '/download/' + encodeURIComponent(name);
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url);
+    xhr.responseType = 'blob';
+    xhr.onprogress = function (e) {
+      if (e.lengthComputable && e.total) {
+        toast('下载中 ' + name + ' ' + Math.round(e.loaded / e.total * 100) + '%');
+      }
+    };
+    xhr.onload = function () {
+      if (xhr.status !== 200) { toast('下载失败：' + name, 'err'); return; }
+      var blob = xhr.response;
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+      toast('下载完成：' + name, 'ok');
+    };
+    xhr.onerror = function () { toast('下载失败：' + name, 'err'); };
+    xhr.send();
+  }
+
+  var imgExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'];
+  var textExts = ['txt', 'md', 'json', 'js', 'ts', 'html', 'css', 'xml', 'log', 'csv', 'yml', 'yaml', 'ini', 'conf'];
+  function previewFile(name) {
+    var ext = (name.split('.').pop() || '').toLowerCase();
+    var url = API + '/preview/' + encodeURIComponent(name);
+    if (imgExts.indexOf(ext) >= 0 || textExts.indexOf(ext) < 0) {
+      window.open(url, '_blank');
+      return;
+    }
+    fetch(url)
+      .then(function (r) { return r.text(); })
+      .then(function (t) {
+        $('previewModal').classList.remove('hidden');
+        $('previewTitle').textContent = name;
+        $('previewContent').textContent = t.length > 200000 ? t.slice(0, 200000) + '... (内容过长已截断)' : t;
+      })
+      .catch(function () { toast('预览失败', 'err'); });
+  }
+
+  function copyLink(name) {
+    copyText(location.origin + API + '/download/' + encodeURIComponent(name));
+  }
+  function showQr(text, label) {
+    $('qrModal').classList.remove('hidden');
+    $('modalText').textContent = label || text;
+    if (modalQrCode) {
+      modalQrCode.update({ data: text });
+    } else {
+      $('modalQr').innerHTML = '';
+      modalQrCode = new QRCodeStyling({
+        width: 240, height: 240, type: 'canvas', data: text, margin: 0,
+        dotsOptions: { type: 'rounded', color: '#10b981' },
+        backgroundOptions: { color: '#ffffff' },
+        cornersSquareOptions: { type: 'extra-rounded', color: '#10b981' },
+        cornersDotOptions: { type: 'dot', color: '#10b981' },
+      });
+      modalQrCode.append($('modalQr'));
+    }
+  }
+  function deleteFile(name) {
+    if (!window.confirm('确定删除文件：' + name + ' ？')) return;
+    fetch(API + '/delete/' + encodeURIComponent(name), { method: 'DELETE' })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code === 0) { toast('已删除：' + name, 'ok'); loadFiles(); }
+        else { toast(json.msg || '删除失败', 'err'); }
+      })
+      .catch(function () { toast('删除失败', 'err'); });
+  }
+
+  // 事件绑定
+  $('dropZone').addEventListener('click', function () { $('fileInput').click(); });
+  $('dropZone').addEventListener('dragover', function (e) { e.preventDefault(); $('dropZone').classList.add('border-emerald-400'); });
+  $('dropZone').addEventListener('dragleave', function () { $('dropZone').classList.remove('border-emerald-400'); });
+  $('dropZone').addEventListener('drop', function (e) {
+    e.preventDefault();
+    $('dropZone').classList.remove('border-emerald-400');
+    if (e.dataTransfer && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+  });
+  $('fileInput').addEventListener('change', function (e) { uploadFiles(e.target.files); e.target.value = ''; });
+  $('openPageBtn').addEventListener('click', function () { window.open(pageUrl, '_blank'); });
+  $('pageQrCard').addEventListener('click', function (e) {
+    if (e.target.closest('button')) return; // 不拦截 openPageBtn
+    showQr(pageUrl, '手机扫码访问页面');
+  });
+  $('sortSelect').addEventListener('change', function (e) { sortType = e.target.value; loadFiles(); });
+  $('orderBtn').addEventListener('click', function () {
+    sortOrder = sortOrder === 'desc' ? 'asc' : 'desc';
+    $('orderBtn').textContent = sortOrder === 'desc' ? '↓ 降序' : '↑ 升序';
+    loadFiles();
+  });
+  $('closeModal').addEventListener('click', function () { $('qrModal').classList.add('hidden'); });
+  $('qrModal').addEventListener('click', function (e) { if (e.target === $('qrModal')) $('qrModal').classList.add('hidden'); });
+  $('closePreview').addEventListener('click', function () { $('previewModal').classList.add('hidden'); });
+  $('previewModal').addEventListener('click', function (e) { if (e.target === $('previewModal')) $('previewModal').classList.add('hidden'); });
+  $('fileList').addEventListener('click', function (e) {
+    var btnEl = e.target.closest('button[data-act]');
+    if (!btnEl) return;
+    var name = btnEl.dataset.name;
+    var act = btnEl.dataset.act;
+    if (act === 'download') downloadFile(name);
+    else if (act === 'preview') previewFile(name);
+    else if (act === 'copy') copyLink(name);
+    else if (act === 'qr') showQr(location.origin + API + '/download/' + encodeURIComponent(name), '扫码直连下载：' + name);
+    else if (act === 'delete') deleteFile(name);
+  });
+
+  // 全选 / 批量操作
+  $('selectAll').addEventListener('change', function (e) {
+    var checked = e.target.checked;
+    fileItems.forEach(function (f) { selected[f.name] = checked; });
+    updateBatchUI();
+    document.querySelectorAll('#fileList input.file-check').forEach(function (cb) { cb.checked = checked; });
+    document.querySelectorAll('#fileList > div').forEach(function (div) {
+      div.classList.toggle('bg-slate-800/40', checked);
+    });
+  });
+  $('fileList').addEventListener('change', function (e) {
+    if (!e.target.classList.contains('file-check')) return;
+    var name = e.target.dataset.name;
+    selected[name] = e.target.checked;
+    updateBatchUI();
+    e.target.closest('div').classList.toggle('bg-slate-800/40', e.target.checked);
+  });
+  $('batchDownload').addEventListener('click', function () {
+    var names = Object.keys(selected).filter(function (n) { return selected[n]; });
+    if (!names.length) return;
+    toast('开始批量下载 ' + names.length + ' 个文件');
+    var i = 0;
+    function next() {
+      if (i >= names.length) { toast('批量下载完成（共 ' + names.length + ' 个）', 'ok'); return; }
+      downloadFile(names[i]);
+      i += 1;
+      setTimeout(next, 800);
+    }
+    next();
+  });
+  $('batchDelete').addEventListener('click', function () {
+    var names = Object.keys(selected).filter(function (n) { return selected[n]; });
+    if (!names.length) return;
+    if (!window.confirm('确定删除选中的 ' + names.length + ' 个文件？此操作不可撤销。')) return;
+    toast('正在删除 ' + names.length + ' 个文件');
+    var total = names.length;
+    var done = 0;
+    var failed = 0;
+    function next() {
+      if (done >= total) {
+        if (failed) toast('已完成 ' + (total - failed) + '/' + total + '，' + failed + ' 个失败', 'err');
+        else toast('已删除 ' + total + ' 个文件', 'ok');
+        selected = {};
+        loadFiles();
+        return;
+      }
+      fetch(API + '/delete/' + encodeURIComponent(names[done]), { method: 'DELETE' })
+        .then(function (r) { return r.json(); })
+        .then(function (j) { if (j.code !== 0) failed++; done++; next(); })
+        .catch(function () { failed++; done++; next(); });
+    }
+    next();
+  });
+
+  loadFiles();
+})();
+</script>
+</body>
+</html>

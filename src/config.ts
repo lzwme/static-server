@@ -1,12 +1,21 @@
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, type Stats } from 'node:fs';
+import type { ServerOptions } from 'node:https';
 import { homedir } from 'node:os';
-import { existsSync, readFileSync, Stats } from 'node:fs';
-import { type ServerOptions } from 'node:https';
-import { type Options } from 'http-proxy-middleware';
-import { type Response, type Express } from 'express';
-import { assign, type NLogger, type color } from '@lzwme/fe-utils';
+import { resolve } from 'node:path';
+import { assign, type color, type NLogger } from '@lzwme/fe-utils';
+import type { Express, Response } from 'express';
+import type { Options } from 'http-proxy-middleware';
 import { logger } from './get-logger';
 import { getCert } from './lib/get-cert';
+
+export interface LocalSendConfig {
+  /** 是否开启 localsend 局域网文件传输功能 */
+  enabled?: boolean;
+  /** 文件存储目录。默认 ~/.static-server/localsend，可通过环境变量 SS_LOCALSEND_DIR 指定 */
+  dir?: string;
+  /** 单个文件上传大小限制（字节）。默认 1GB */
+  maxSize?: number;
+}
 
 export interface SSConfig {
   /** 是否开启目录列表 */
@@ -17,6 +26,8 @@ export interface SSConfig {
   host?: string;
   /** 是否开启日志记录。默认为 false。若设置为 true 则默认为 ~/.sserver/log.log；若为字符串，则设置为日志路径 */
   log?: boolean | string;
+  /** localsend 局域网文件传输功能。可设置为 true 开启，或传入配置对象 */
+  localsend?: LocalSendConfig | boolean;
   /** 启动后是否打开首页 */
   open?: boolean;
   /** 监听端口号。默认 80，开启 https 则为 443 */
@@ -46,11 +57,7 @@ export interface SSConfig {
   /** 设置公共自定义 headers */
   headers?: Record<string, string | string[] | undefined>;
   /** 按请求自定义 headers。返回结果与 headers 内容合并 */
-  setHeaders?: (
-    res: Response<any, Record<string, any>>,
-    path: string,
-    stat: Stats
-  ) => Record<string, string | string[] | undefined>;
+  setHeaders?: (res: Response<any, Record<string, any>>, path: string, stat: Stats) => Record<string, string | string[] | undefined>;
 }
 
 const ssConfig: SSConfig = {
@@ -79,6 +86,16 @@ export async function getConfig(useCache = true, cfg?: SSConfig) {
   if (cfg) assign(ssConfig, cfg);
 
   ssConfig.rootDir = resolve(process.cwd(), typeof ssConfig.rootDir === 'string' ? ssConfig.rootDir : '.');
+
+  // localsend 配置归一化：支持 true / 配置对象，支持环境变量 SS_LOCALSEND_DIR 指定存储目录
+  if (ssConfig.localsend) {
+    const localsend: LocalSendConfig =
+      typeof ssConfig.localsend === 'boolean' ? { enabled: ssConfig.localsend } : { ...ssConfig.localsend };
+    localsend.enabled = typeof ssConfig.localsend === 'boolean' ? ssConfig.localsend : localsend.enabled !== false;
+    localsend.dir = process.env.SS_LOCALSEND_DIR || localsend.dir || resolve(homedir(), '.static-server/localsend');
+    localsend.maxSize = localsend.maxSize || 1024 * 1024 * 1024;
+    ssConfig.localsend = localsend;
+  }
 
   if (ssConfig.log) {
     logger.setLogDir(typeof ssConfig.log === 'boolean' ? resolve(homedir(), '.sserver/log.log') : ssConfig.log);

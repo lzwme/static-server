@@ -1,7 +1,8 @@
 // @see https://github.com/Subash/mkcert
 
-import { pki, md } from 'node-forge';
-import { promisify } from 'util';
+import { promisify } from 'node:util';
+import { md, pki } from 'node-forge';
+
 const generateKeyPair = promisify(pki.rsa.generateKeyPair.bind(pki.rsa));
 
 interface GenCertOptions {
@@ -13,7 +14,7 @@ interface GenCertOptions {
 }
 
 export async function generateCert(options: GenCertOptions) {
-  let { subject, issuer, extensions = [], validityDays = 36500, signWith } = options;
+  const { subject, issuer, extensions = [], validityDays = 36500, signWith } = options;
   // create serial from and integer between 50000 and 99999
   const serial = Math.floor(Math.random() * 95000 + 50000).toString();
   const keyPair = await generateKeyPair({ bits: 2048, workers: 4 });
@@ -61,9 +62,9 @@ interface CreateCert extends Omit<Partial<GenCertOptions>, 'issuer'> {
 export function createCert(options: CreateCert) {
   // certificate Attributes: https://git.io/fptna
   if (!options.subject) options.subject = [];
-  if (!options.subject.find(d => d.name === 'commonName')) {
-      // use the first address as common name
-      options.subject.push({ name: 'commonName', value: options.domains[0] });
+  if (!options.subject.find((d) => d.name === 'commonName')) {
+    // use the first address as common name
+    options.subject.push({ name: 'commonName', value: options.domains[0] });
   }
 
   // required certificate extensions for a tls certificate
@@ -73,7 +74,7 @@ export function createCert(options: CreateCert) {
     { name: 'extKeyUsage', serverAuth: true, clientAuth: true },
     {
       name: 'subjectAltName',
-      altNames: options.domains.map(domain => {
+      altNames: options.domains.map((domain) => {
         const types = { domain: 2, ip: 7 }; // available Types: https://git.io/fptng
         const isIp = isIP(domain);
 

@@ -34,34 +34,38 @@
     "ss.config.sample.js"
   ],
   "scripts": {
-    "prepare": "husky install",
     "ss": "node bin/sserver.js",
     "start": "npm run stop && pm2 start dist/index.js --name sserver",
     "stop": "pm2 stop sserver",
     "watch": "tsc -w",
+    "lint": "biome check",
+    "fix": "biome check --fix",
     "dev": "ts-node -T src/cli.ts",
-    "build": "npm run clean && tsc",
+    "build": "npm run clean && tsc && node scripts/copy-assets.js",
     "clean": "flh rm -f dist",
     "version": "standard-version",
     "release": "npm run build"
   },
   "dependencies": {
     "@lzwme/fe-utils": "^1.9.2",
-    "commander": "^14.0.2",
+    "commander": "^15.0.0",
     "console-log-colors": "^0.5.0",
-    "express": "^5.1.0",
-    "http-proxy-middleware": "^3.0.5",
-    "node-forge": "^1.3.1",
-    "serve-index": "^1.9.1"
+    "express": "^5.2.1",
+    "http-proxy-middleware": "^4.2.0",
+    "multer": "^2.2.0",
+    "node-forge": "^1.4.0",
+    "serve-index": "^1.9.2"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.6",
     "@lzwme/fed-lint-helper": "^2.6.6",
-    "@types/express": "^5.0.5",
-    "@types/node": "^24.10.0",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.2.0",
+    "@types/node": "^26.1.2",
     "@types/node-forge": "^1.3.14",
     "husky": "^9.1.7",
     "standard-version": "^9.5.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^7.0.2"
   }
 }

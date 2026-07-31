@@ -9,13 +9,13 @@ export function socketProxy(
     remotePort: 27017,
     //代理转发的 IP 地址
     remoteHost: '127.0.0.1',
-  }
+  },
 ) {
   const server = net
-    .createServer(socket => {
+    .createServer((socket) => {
       log.green('proxy for address', socket.address());
 
-      let to = net.createConnection({
+      const to = net.createConnection({
         host: config.remoteHost,
         port: config.remotePort,
       });

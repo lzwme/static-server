@@ -1,9 +1,9 @@
-import { existsSync } from 'fs';
-import { mkdir, readFile, writeFile } from 'fs/promises';
-import { createCA, createCert } from './mkcert';
-import { resolve } from 'path';
-import { logger } from '../get-logger';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { greenBright } from 'console-log-colors';
+import { logger } from '../get-logger';
+import { createCA, createCert } from './mkcert';
 
 export async function getCert(host = 'localhost', cacheDir = '') {
   const result = {

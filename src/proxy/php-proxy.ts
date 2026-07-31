@@ -1,12 +1,12 @@
 // @see https://www.npmjs.com/package/phpcgijs
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { parse, type UrlWithStringQuery } from 'node:url';
-import { promises, existsSync } from 'node:fs';
+import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import { existsSync, promises } from 'node:fs';
 import { join } from 'node:path';
-import type { NextFunction, Express, Request, Response } from 'express';
-import { execSync, color } from '@lzwme/fe-utils';
-import { type SSConfig } from '../config';
+import { parse, type UrlWithStringQuery } from 'node:url';
+import { color, execSync } from '@lzwme/fe-utils';
+import type { Express, NextFunction, Request, Response } from 'express';
+import type { SSConfig } from '../config';
 import { logger } from '../get-logger';
 
 export async function phpProxy(app: Express, config: SSConfig) {
@@ -28,7 +28,7 @@ async function findPhpFile(pathname: string, rootDir: string) {
 
   if (!filepath.includes(rootDir) || !existsSync(filepath)) return false;
 
-  let stat = await promises.stat(filepath);
+  const stat = await promises.stat(filepath);
 
   if (stat.isDirectory()) {
     filepath = join(filepath, 'index.php');
@@ -42,9 +42,16 @@ function formatArgs(args: Record<string, unknown>) {
   return Object.entries(args).map(([key, value]) => `${key.startsWith('-') ? key : `-${key}`} ${value}`);
 }
 
-function runPhpCgi(req: Request, response: Response, url: UrlWithStringQuery, filepath: string, phpConfig: SSConfig['phpConfig'], rootDir: string) {
+function runPhpCgi(
+  req: Request,
+  response: Response,
+  url: UrlWithStringQuery,
+  filepath: string,
+  phpConfig: SSConfig['phpConfig'],
+  rootDir: string,
+) {
   const pathname = url.pathname || req.url;
-  const pathinfo = pathname.includes('.php') ? pathname.split('.php')[0] + '.php' : pathname;
+  const pathinfo = pathname.includes('.php') ? `${pathname.split('.php')[0]}.php` : pathname;
 
   if (!phpConfig) return;
 
@@ -82,11 +89,11 @@ function runPhpCgi(req: Request, response: Response, url: UrlWithStringQuery, fi
     // All HTTP headers sent by the client. Headers are separated by carriage return characters (ASCII 13 - \n) and each header name is prefixed by HTTP_, transformed to upper cases, and - characters it contains are replaced by _ characters.
     ALL_HTTP: Object.entries(req.headers)
       .map(([key, value]) => `HTTP__${key.toUpperCase().replace('-', '_')}: ${value}`)
-      .reduce((a, b) => a + b + '\n', ''),
+      .reduce((a, b) => `${a + b}\n`, ''),
     // All HTTP headers as sent by the client in raw form. No transformation on the header names is applied.
     ALL_RAW: Object.entries(req.headers)
-      .map(([key, value]) => `${key}: value`)
-      .reduce((a, b) => a + b + '\n', ''),
+      .map(([key, value]) => `${key}: ${value}`)
+      .reduce((a, b) => `${a + b}\n`, ''),
     // The web server's software identity.
     SERVER_SOFTWARE: 'NodeJS SServer',
     // The host name or the IP address of the computer running the web server as given in the requested URL.
@@ -116,14 +123,14 @@ function runPhpCgi(req: Request, response: Response, url: UrlWithStringQuery, fi
     REDIRECT_STATUS: '1',
   };
 
-  Object.entries(req.headers).forEach(function ([key, value]) {
-    env['HTTP_' + key.toUpperCase().replace('-', '_')] = value as string;
+  Object.entries(req.headers).forEach(([key, value]) => {
+    env[`HTTP_${key.toUpperCase().replace('-', '_')}`] = value as string;
   });
 
   if (filepath.endsWith('.php')) {
     let childProc: ChildProcessWithoutNullStreams;
     const cgiArgs = formatArgs(phpConfig.args!);
-    let cgipath = phpConfig.cgiPath || getPhpCgi();
+    const cgipath = phpConfig.cgiPath || getPhpCgi();
     let res = '';
     let err = '';
 
@@ -163,10 +170,10 @@ function runPhpCgi(req: Request, response: Response, url: UrlWithStringQuery, fi
         do {
           const m = lines[line].split(': ');
           if (m[0] === '') break;
-          if (m[0] == 'Status') {
-            response.statusCode = parseInt(m[1]);
+          if (m[0] === 'Status') {
+            response.statusCode = parseInt(m[1], 10);
           }
-          if (m.length == 2) {
+          if (m.length === 2) {
             response.setHeader(m[0], m[1]);
           }
           line++;

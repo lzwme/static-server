@@ -47,6 +47,9 @@ ss -H --host local.lzw.me
 
 # 启用 https，并保存默认生成的 ssl 证书
 ss -H --ssl-cache ./cache
+
+# 开启 localsend 局域网文件传输功能
+ss --localsend
 ```
 
 ### 配置代理转发
@@ -84,6 +87,34 @@ module.exports = {
     },
   ],
 }
+```
+
+### LocalSend 局域网文件传输
+
+开启后可通过 `http://<本机IP>:<port>/localsend` 访问，实现同网段设备间的文件快速传输（支持多文件上传/下载、实时进度、二维码扫码访问、扫码直连下载、文件预览与排序等）：
+
+```bash
+# 命令行方式开启
+ss --localsend
+
+# 指定文件存储目录（也可用环境变量 SS_LOCALSEND_DIR 指定）
+ss --localsend --localsend-dir /tmp/localsend
+```
+
+配置文件方式开启：
+
+```js
+// ss.config.js
+module.exports = {
+  port: 8888,
+  localsend: {
+    enabled: true,
+    // 文件存储目录。默认 ~/.static-server/localsend，可用环境变量 SS_LOCALSEND_DIR 覆盖
+    dir: '/tmp/localsend',
+    // 单个文件上传大小限制（字节），默认 1GB
+    maxSize: 1024 * 1024 * 1024,
+  },
+};
 ```
 
 ## 开发
