@@ -4,7 +4,11 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>LocalSend · 局域网文件传输</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>" />
+<link rel="icon" type="image/png" href="/localsend/favicon.png" />
+<link rel="manifest" href="/localsend/manifest.webmanifest" />
+<meta name="theme-color" content="#10b981" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="LocalSend" />
 <!-- 本地资源：局域网常常没有外网，CDN 不可达时会导致页面无样式、二维码无法生成 -->
 <link rel="stylesheet" href="/localsend/style.css" />
 <script src="/localsend/vendor/qr-code-styling.js"></script>
@@ -381,7 +385,12 @@
     return fetch(withKey(API + '/list?sort=' + sortType + '&order=' + sortOrder))
       .then(function (r) { return r.json(); })
       .then(function (json) { renderList(json.data || []); })
-      .catch(function () { toast('文件列表加载失败', 'err'); });
+      .catch(function () {
+        // 拿不到列表时给出明确原因，避免和「没有文件」混淆
+        $('emptyTip').classList.remove('hidden');
+        $('emptyTip').textContent = '无法连接服务端，请确认设备与本机在同一局域网';
+        $('fileCount').textContent = '';
+      });
   }
   function updateBatchUI() {
     var names = Object.keys(selected).filter(function(n) { return selected[n]; });
@@ -1590,6 +1599,17 @@
 
   loadFiles();
   refreshTrashCount();
+
+  // 注册 Service Worker，提供离线可用的页面外壳
+  // 仅在安全上下文可用（https 或 localhost）；局域网 http 下浏览器会拒绝注册
+  if ('serviceWorker' in navigator && window.isSecureContext) {
+    window.addEventListener('load', function () {
+      var swUrl = '/localsend/sw.js' + (KEY ? '?key=' + encodeURIComponent(KEY) : '');
+      navigator.serviceWorker.register(swUrl).catch(function () {
+        // 注册失败不影响正常使用，静默忽略
+      });
+    });
+  }
 })();
 </script>
 </body>
