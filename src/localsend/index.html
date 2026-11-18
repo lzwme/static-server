@@ -62,7 +62,12 @@
   <section>
     <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
       <h2 class="font-semibold text-base sm:text-lg">文件列表 <span id="fileCount" class="text-xs sm:text-sm text-slate-400 font-normal"></span></h2>
-      <div class="flex gap-2 text-xs sm:text-sm">
+      <div class="flex gap-2 text-xs sm:text-sm items-center flex-wrap">
+        <div class="relative">
+          <input id="searchInput" type="search" placeholder="搜索文件名…" autocomplete="off"
+            class="bg-slate-800 border border-slate-700 rounded-lg pl-7 pr-2.5 sm:pr-3 py-1.5 outline-none focus:border-emerald-500/60 placeholder:text-slate-500 w-32 sm:w-44" />
+          <span class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 text-xs pointer-events-none">🔍</span>
+        </div>
         <select id="sortSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 outline-none cursor-pointer">
           <option value="time">按时间排序</option>
           <option value="size">按大小排序</option>
@@ -89,6 +94,11 @@
     </div>
     <div id="fileList" class="bg-slate-900 border border-slate-800 rounded-2xl divide-y divide-slate-800"></div>
     <div id="emptyTip" class="hidden text-center text-slate-500 py-16">暂无文件，上传第一个文件开始传输吧</div>
+    <div id="pager" class="hidden mt-3 flex items-center justify-center gap-2 text-xs sm:text-sm">
+      <button id="prevPage" class="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition">上一页</button>
+      <span id="pageInfo" class="text-slate-400 font-mono"></span>
+      <button id="nextPage" class="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition">下一页</button>
+    </div>
   </section>
 </div>
 
@@ -128,8 +138,30 @@
     return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'key=' + encodeURIComponent(KEY);
   }
   var pageUrl = location.origin + location.pathname + (KEY ? '?key=' + encodeURIComponent(KEY) : '');
+  // 排序偏好记忆：记住用户上次选择的排序方式与升降序
   var sortType = 'time';
   var sortOrder = 'desc';
+  try {
+    var savedSort = JSON.parse(localStorage.getItem('localsend.sort') || 'null');
+    if (savedSort && (savedSort.type === 'time' || savedSort.type === 'size')) {
+      sortType = savedSort.type;
+      if (savedSort.order === 'asc' || savedSort.order === 'desc') sortOrder = savedSort.order;
+    }
+  } catch (e) {
+    // localStorage 不可用时忽略
+  }
+  function saveSortPref() {
+    try {
+      localStorage.setItem('localsend.sort', JSON.stringify({ type: sortType, order: sortOrder }));
+    } catch (e) {
+      // 忽略存储失败
+    }
+  }
+  // 搜索关键词与分页状态
+  var searchKeyword = '';
+  var PAGE_SIZE = 50; // 每页显示的文件数
+  var currentPage = 1;
+  var totalPages = 1;
   var modalQrCode = null;
   var selected = {};
   var fileItems = [];
@@ -222,10 +254,13 @@
   function updateBatchUI() {
     var names = Object.keys(selected).filter(function(n) { return selected[n]; });
     var count = names.length;
-    var total = fileItems.length;
-    $('batchBar').classList.toggle('hidden', total === 0);
-    $('selectAll').checked = total > 0 && count === total;
-    $('selectAll').indeterminate = count > 0 && count < total;
+    // 全选的范围是当前页显示的文件
+    var pageItems = currentPageItems();
+    var total = pageItems.length;
+    var selectedOnPage = pageItems.filter(function (f) { return selected[f.name]; }).length;
+    $('batchBar').classList.toggle('hidden', fileItems.length === 0);
+    $('selectAll').checked = total > 0 && selectedOnPage === total;
+    $('selectAll').indeterminate = selectedOnPage > 0 && selectedOnPage < total;
     if (count > 0) {
       $('selectedCount').classList.remove('hidden');
       $('selectedCount').querySelector('em').textContent = count;
@@ -239,6 +274,26 @@
       $('batchDelete').disabled = true;
     }
   }
+  /** 更新分页控件状态 */
+  function updatePager() {
+    var pager = $('pager');
+    var show = totalPages > 1;
+    pager.classList.toggle('hidden', !show);
+    if (!show) return;
+    $('pageInfo').textContent = currentPage + ' / ' + totalPages;
+    $('prevPage').disabled = currentPage <= 1;
+    $('nextPage').disabled = currentPage >= totalPages;
+  }
+
+  /** 当前页显示的文件（用于全选范围） */
+  function currentPageItems() {
+    var kw = searchKeyword ? searchKeyword.toLowerCase() : '';
+    var filtered = fileItems;
+    if (kw) filtered = fileItems.filter(function (f) { return f.name.toLowerCase().indexOf(kw) >= 0; });
+    var start = (currentPage - 1) * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }
+
   function renderList(list) {
     fileItems = list;
     // 保留仍在列表中的文件的选中状态
@@ -246,12 +301,36 @@
     list.forEach(function(f) { if (selected[f.name]) keep[f.name] = true; });
     selected = keep;
 
+    // 按搜索关键词过滤（不区分大小写，支持路径片段匹配）
+    var filtered = list;
+    if (searchKeyword) {
+      var kw = searchKeyword.toLowerCase();
+      filtered = list.filter(function (f) { return f.name.toLowerCase().indexOf(kw) >= 0; });
+    }
+
+    // 分页
+    totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+    if (currentPage > totalPages) currentPage = totalPages;
+    if (currentPage < 1) currentPage = 1;
+    var start = (currentPage - 1) * PAGE_SIZE;
+    var pageItems = filtered.slice(start, start + PAGE_SIZE);
+
     var wrap = $('fileList');
     wrap.innerHTML = '';
-    $('emptyTip').classList.toggle('hidden', list.length > 0);
-    $('fileCount').textContent = '(' + list.length + ')';
+    var isEmpty = list.length === 0;
+    $('emptyTip').classList.toggle('hidden', !isEmpty);
+    if (!isEmpty && filtered.length === 0) {
+      $('emptyTip').classList.remove('hidden');
+      $('emptyTip').textContent = '没有匹配「' + searchKeyword + '」的文件';
+    } else {
+      $('emptyTip').textContent = '暂无文件，上传第一个文件开始传输吧';
+    }
+    $('fileCount').textContent = searchKeyword
+      ? '(' + filtered.length + '/' + list.length + ')'
+      : '(' + list.length + ')';
     updateBatchUI();
-    list.forEach(function (f) {
+    updatePager();
+    pageItems.forEach(function (f) {
       var div = document.createElement('div');
       div.className = 'flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2.5 sm:py-3 hover:bg-slate-800/60 transition flex-wrap' + (selected[f.name] ? ' bg-slate-800/40' : '');
       div.dataset.name = f.name;
@@ -862,11 +941,43 @@
     if (e.target.closest('button')) return; // 不拦截 openPageBtn
     showQr(pageUrl, '手机扫码访问页面');
   });
-  $('sortSelect').addEventListener('change', function (e) { sortType = e.target.value; loadFiles(); });
+  $('sortSelect').addEventListener('change', function (e) {
+    sortType = e.target.value;
+    saveSortPref();
+    currentPage = 1;
+    loadFiles();
+  });
   $('orderBtn').addEventListener('click', function () {
     sortOrder = sortOrder === 'desc' ? 'asc' : 'desc';
     $('orderBtn').textContent = sortOrder === 'desc' ? '↓ 降序' : '↑ 升序';
+    saveSortPref();
+    currentPage = 1;
     loadFiles();
+  });
+  // 搜索过滤：输入即过滤，无需回车
+  var searchTimer = null;
+  $('searchInput').addEventListener('input', function (e) {
+    var value = e.target.value;
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(function () {
+      searchKeyword = value.trim();
+      currentPage = 1;
+      // 用已有数据就地过滤，避免每次输入都请求服务端
+      renderList(fileItems);
+    }, 150);
+  });
+  // 分页
+  $('prevPage').addEventListener('click', function () {
+    if (currentPage <= 1) return;
+    currentPage -= 1;
+    renderList(fileItems);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  $('nextPage').addEventListener('click', function () {
+    if (currentPage >= totalPages) return;
+    currentPage += 1;
+    renderList(fileItems);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   });
   $('closeModal').addEventListener('click', function () { $('qrModal').classList.add('hidden'); });
   $('qrModal').addEventListener('click', function (e) { if (e.target === $('qrModal')) $('qrModal').classList.add('hidden'); });
@@ -886,10 +997,10 @@
     else if (act === 'delete') deleteFile(name);
   });
 
-  // 全选 / 批量操作
+  // 全选 / 批量操作（全选范围为当前页显示的文件）
   $('selectAll').addEventListener('change', function (e) {
     var checked = e.target.checked;
-    fileItems.forEach(function (f) { selected[f.name] = checked; });
+    currentPageItems().forEach(function (f) { selected[f.name] = checked; });
     updateBatchUI();
     document.querySelectorAll('#fileList input.file-check').forEach(function (cb) { cb.checked = checked; });
     document.querySelectorAll('#fileList > div').forEach(function (div) {
@@ -941,6 +1052,10 @@
     }
     next();
   });
+
+  // 恢复上次选择的排序方式与升降序
+  $('sortSelect').value = sortType;
+  $('orderBtn').textContent = sortOrder === 'desc' ? '↓ 降序' : '↑ 升序';
 
   loadFiles();
 })();
