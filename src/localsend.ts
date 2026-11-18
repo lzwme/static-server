@@ -17,6 +17,7 @@ import multer from 'multer';
 import { getConfig } from './config';
 import { logger } from './get-logger';
 import { createGuard } from './lib/localsend-guard';
+import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
 import { getIp } from './lib/utils';
 
 /**
@@ -224,7 +225,8 @@ export async function initLocalsend(app: Express): Promise<void> {
           isDir: stat.isDirectory(),
         };
       })
-      .filter((item) => !item.isDir);
+      // 过滤上传过程中的临时文件，避免列表里出现无扩展名的哈希文件名
+      .filter((item) => !item.isDir && !isTempFileName(item.name));
     list.sort((a, b) => (sort === 'size' ? (asc ? a.size - b.size : b.size - a.size) : asc ? a.mtime - b.mtime : b.mtime - a.mtime));
     res.json({ code: 0, data: list });
   });
@@ -233,8 +235,19 @@ export async function initLocalsend(app: Express): Promise<void> {
   const blockExts = new Set(
     (ls.blockExtensions ?? DEFAULT_BLOCK_EXTENSIONS).map((e) => (e.startsWith('.') ? e : `.${e}`).toLowerCase()),
   );
+  // 记录每个请求产生的临时文件，便于请求结束（含客户端中断）后清理残留
+  const tempFiles = new WeakMap<Request, Set<string>>();
   const upload = multer({
-    dest: dir,
+    storage: multer.diskStorage({
+      destination: (_req, _file, cb) => cb(null, dir),
+      filename: (req, _file, cb) => {
+        const fileName = randomBytes(16).toString('hex');
+        const set = tempFiles.get(req) || new Set<string>();
+        set.add(join(dir, fileName));
+        tempFiles.set(req, set);
+        cb(null, fileName);
+      },
+    }),
     limits: { fileSize: maxSize, files: 200 },
     // 显式声明按 latin1 读取 Content-Disposition 参数，保留文件名的原始字节，
     // 再由 decodeUploadName 按 utf-8 / gb18030 解码，避免中文文件名乱码
@@ -280,11 +293,26 @@ export async function initLocalsend(app: Express): Promise<void> {
       const files = (req.files || []) as Express.Multer.File[];
       const results: { name: string; size: number }[] = [];
       const errors: string[] = [];
+      const temps = tempFiles.get(req);
+
+      // 请求结束（含客户端中断）后清理未转正的临时文件，避免残留占用空间
+      res.on('close', () => {
+        if (!temps) return;
+        for (const tempPath of temps) {
+          try {
+            rmSync(tempPath, { force: true });
+          } catch {
+            // 忽略清理失败
+          }
+        }
+        temps.clear();
+      });
 
       for (const f of files) {
         try {
           const name = uniqueName(dir, safeName(decodeUploadName(f.originalname)) || `file_${Date.now()}`);
           renameSync(f.path, join(dir, name));
+          temps?.delete(f.path);
           results.push({ name, size: f.size });
         } catch (err) {
           logger.error('[localsend upload]', err);
@@ -342,6 +370,12 @@ export async function initLocalsend(app: Express): Promise<void> {
     if (!existsSync(filePath)) return void res.status(404).json({ code: 1, msg: '文件不存在' });
     rmSync(filePath);
     res.json({ code: 0 });
+  });
+
+  // 清理上传残留的临时文件（上传中断时可能留下无扩展名的哈希文件）
+  app.post('/localsend/api/cleanup-temp', (_req: Request, res: Response) => {
+    const removed = cleanupTempFiles(dir);
+    res.json({ code: 0, data: { removed: removed.length } });
   });
 
   // 统一错误处理：把上传失败、文件超限、类型拦截等转成友好的 JSON 提示
