@@ -1,9 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { program } from 'commander';
 import { color } from 'console-log-colors';
 import { getConfig } from './config';
 import { logger } from './get-logger';
+import { repairLocalsendNames } from './localsend';
 import { initServer } from './static-server';
 
 const pkg = require('../package.json');
@@ -70,6 +72,24 @@ program
 
     writeFileSync(confFile, readFileSync(tplFile));
     logger.info('已生成配置文件：', color.greenBright(confFile));
+  });
+
+program
+  .command('fix-localsend-names')
+  .description('修复 localsend 存储目录中因编码问题产生的乱码文件名')
+  .option('--localsend-dir <dir>', 'localsend 文件存储目录。默认使用配置中的目录')
+  .action(async (opts) => {
+    const config = await getConfig(false, opts.localsendDir ? { localsend: { enabled: true, dir: opts.localsendDir } } : {});
+    const ls = typeof config.localsend === 'object' && config.localsend ? config.localsend : {};
+    const dir = opts.localsendDir || ls.dir || process.env.SS_LOCALSEND_DIR || resolve(homedir(), '.static-server/localsend');
+
+    const renamed = repairLocalsendNames(dir);
+    if (!renamed.length) {
+      logger.info('未发现乱码文件名。目录：', color.cyanBright(dir));
+      return;
+    }
+    for (const [from, to] of renamed) logger.info(`已重命名：${color.yellow(from)} → ${color.greenBright(to)}`);
+    logger.info(`共修复 ${color.cyanBright(renamed.length)} 个文件名。目录：`, color.cyanBright(dir));
   });
 
 program.parse(process.argv);

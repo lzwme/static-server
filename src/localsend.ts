@@ -30,6 +30,64 @@ function safeName(name?: unknown) {
   return n;
 }
 
+/** 严格解码字节，编码不匹配时返回 null */
+function decodeStrict(bytes: Buffer, encoding: string): string | null {
+  try {
+    return new TextDecoder(encoding, { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 修复 multipart 上传的文件名乱码。
+ *
+ * 浏览器（WHATWG 规范）会把文件名的 UTF-8 原始字节直接写进 Content-Disposition 的 filename 参数，
+ * 而 busboy 默认按 latin1（defParamCharset='latin1'）解码该参数，中文文件名就会变成乱码
+ * （如 `中文.txt` → `ä¸­æ–‡.txt`）。
+ *
+ * 这里保留原始字节（latin1 与字节一一对应，可无损还原），再按 utf-8 / gb18030 依次尝试严格解码：
+ *  - UTF-8 是浏览器的标准行为；
+ *  - gb18030 兼容部分国产客户端 / 老程序用 GBK 发送文件名的情况。
+ */
+export function decodeUploadName(raw?: unknown): string {
+  const name = String(raw || '');
+  if (!name) return '';
+  // 含有 latin1 之外的字符，说明文件名已被正确解码过（如 RFC2231 的 filename*），直接使用
+  if ([...name].some((c) => c.charCodeAt(0) > 255)) return name;
+  const bytes = Buffer.from(name, 'latin1');
+  for (const encoding of ['utf-8', 'gb18030']) {
+    const decoded = decodeStrict(bytes, encoding);
+    if (decoded !== null && decoded !== name) return decoded;
+  }
+  return name;
+}
+
+/**
+ * 修复历史上已上传的乱码文件名（把 UTF-8 字节误存成 latin1 字符导致的乱码）。
+ * 返回被重命名的 [旧名, 新名] 列表。
+ */
+export function repairLocalsendNames(dir: string): [string, string][] {
+  const renamed: [string, string][] = [];
+  if (!existsSync(dir)) return renamed;
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    if (!statSync(full).isFile()) continue;
+    if ([...name].some((c) => c.charCodeAt(0) > 255)) continue; // 已是正常文件名
+    const decoded = decodeStrict(Buffer.from(name, 'latin1'), 'utf-8');
+    if (decoded === null || decoded === name) continue; // 非乱码
+    // 目标名已存在时按 _1/_2 追加后缀，避免覆盖同名文件
+    const target = uniqueName(dir, decoded);
+    try {
+      renameSync(full, join(dir, target));
+      renamed.push([name, target]);
+    } catch (err) {
+      logger.error('[localsend 修复文件名]', err);
+    }
+  }
+  return renamed;
+}
+
 /** 同名文件自动追加 _1/_2 后缀 */
 function uniqueName(targetDir: string, name: string) {
   const ext = extname(name);
@@ -92,6 +150,9 @@ export async function initLocalsend(app: Express): Promise<void> {
   const upload = multer({
     dest: dir,
     limits: { fileSize: maxSize, files: 200 },
+    // 显式声明按 latin1 读取 Content-Disposition 参数，保留文件名的原始字节，
+    // 再由 decodeUploadName 按 utf-8 / gb18030 解码，避免中文文件名乱码
+    defParamCharset: 'latin1',
   });
   app.post('/localsend/api/upload', upload.array('files'), (req: Request, res: Response) => {
     const files = (req.files || []) as Express.Multer.File[];
@@ -100,7 +161,7 @@ export async function initLocalsend(app: Express): Promise<void> {
 
     for (const f of files) {
       try {
-        const name = uniqueName(dir, safeName(f.originalname) || `file_${Date.now()}`);
+        const name = uniqueName(dir, safeName(decodeUploadName(f.originalname)) || `file_${Date.now()}`);
         renameSync(f.path, join(dir, name));
         results.push({ name, size: f.size });
       } catch (err) {
