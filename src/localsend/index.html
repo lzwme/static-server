@@ -288,6 +288,87 @@
     var ext = (name.split('.').pop() || '').toLowerCase();
     return iconMap[ext] || '📄';
   }
+
+  // ---------------------------------------------------------------------------
+  // 图片缩略图
+  //
+  // 直接用原图当列表图标会让图片多的目录加载非常吃力。这里在浏览器端把
+  // 图片缩到很小尺寸后缓存起来：只在元素进入可视区域时才生成，
+  // 生成结果存在内存里，列表重绘时直接复用。
+  // ---------------------------------------------------------------------------
+  var THUMB_MAX_SIZE = 2 * 1024 * 1024; // 超过 2MB 的图片不生成缩略图，避免整图传输
+  var THUMB_EDGE = 96; // 缩略图最长边像素
+  var thumbCache = {}; // 文件名 -> dataURL
+  var thumbObserver = null;
+
+  /** 是否是可以生成缩略图的位图格式（SVG 有外部引用风险，暂不处理） */
+  function isThumbImage(name) {
+    return /\.(jpg|jpeg|png|gif|webp|bmp|avif)$/i.test(name);
+  }
+
+  /** 生成缩略图并填入 img 元素 */
+  function buildThumb(name, imgEl) {
+    if (thumbCache[name]) {
+      imgEl.src = thumbCache[name];
+      imgEl.style.opacity = '1';
+      return;
+    }
+    fetch(withKey(API + '/preview/' + encodeURIComponent(name)))
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.blob();
+      })
+      .then(function (blob) {
+        if (!window.createImageBitmap) throw new Error('不支持 createImageBitmap');
+        return createImageBitmap(blob);
+      })
+      .then(function (bmp) {
+        var scale = Math.min(THUMB_EDGE / bmp.width, THUMB_EDGE / bmp.height, 1);
+        var canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(bmp.width * scale));
+        canvas.height = Math.max(1, Math.round(bmp.height * scale));
+        canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+        if (bmp.close) bmp.close();
+        var dataUrl = canvas.toDataURL('image/webp', 0.8);
+        thumbCache[name] = dataUrl;
+        imgEl.src = dataUrl;
+        imgEl.style.opacity = '1';
+      })
+      .catch(function () {
+        // 生成失败时保留原来的图标，不打扰用户
+      });
+  }
+
+  /**
+   * 监听缩略图占位元素，进入可视区域后再生成。
+   *
+   * 观察的是外层固定尺寸的容器，而不是 img 本身：
+   * img 在生成前是透明的（而非 display:none），否则不会产生交叉事件。
+   */
+  function observeThumb(el) {
+    var name = el.dataset.thumb;
+    if (!name) return;
+    var imgEl = el.querySelector('img');
+    if (!imgEl) return;
+    if (thumbCache[name]) {
+      imgEl.src = thumbCache[name];
+      imgEl.style.opacity = '1';
+      return;
+    }
+    if (!thumbObserver) {
+      thumbObserver = new IntersectionObserver(
+        function (entries) {
+          entries.forEach(function (entry) {
+            if (!entry.isIntersecting) return;
+            thumbObserver.unobserve(entry.target);
+            buildThumb(entry.target.dataset.thumb, entry.target.querySelector('img'));
+          });
+        },
+        { rootMargin: '200px' }
+      );
+    }
+    thumbObserver.observe(el);
+  }
   function btn(label, act, danger, icon) {
     var cls = danger ? 'text-red-400 hover:bg-red-500/10 border-red-500/30' : 'text-slate-300 hover:bg-slate-700/70 border-slate-600/60';
     return '<button data-act="' + act + '" title="' + label + '" class="px-1.5 sm:px-2.5 py-1 rounded-lg text-xs border transition ' + cls + '">' +
@@ -409,6 +490,10 @@
     var pageItems = filtered.slice(start, start + PAGE_SIZE);
 
     var wrap = $('fileList');
+    // 重绘前解除旧的缩略图监听，避免观察者持有已移除的节点
+    if (thumbObserver) {
+      Array.prototype.forEach.call(wrap.querySelectorAll('[data-thumb]'), function (el) { thumbObserver.unobserve(el); });
+    }
     wrap.innerHTML = '';
     var isEmpty = list.length === 0;
     $('emptyTip').classList.toggle('hidden', !isEmpty);
@@ -433,7 +518,12 @@
       var base = dir ? f.name.slice(dir.length + 1) : f.name;
       div.innerHTML =
         '<label class="flex items-center shrink-0 cursor-pointer"><input type="checkbox" class="file-check accent-emerald-500 w-3.5 h-3.5" data-name="' + escapeHtml(f.name) + '"' + (selected[f.name] ? ' checked' : '') + '></label>' +
-        '<span class="text-xl sm:text-2xl shrink-0">' + fileIcon(f.name) + '</span>' +
+        (isThumbImage(f.name) && f.size <= THUMB_MAX_SIZE
+          ? '<span data-thumb="' + escapeHtml(f.name) + '" class="relative w-10 h-10 sm:w-12 sm:h-12 shrink-0 flex items-center justify-center">' +
+              '<span class="text-xl sm:text-2xl">' + fileIcon(f.name) + '</span>' +
+              '<img alt="" class="absolute inset-0 w-full h-full rounded-lg object-cover bg-slate-800 opacity-0 transition-opacity" />' +
+            '</span>'
+          : '<span class="text-xl sm:text-2xl shrink-0">' + fileIcon(f.name) + '</span>') +
         '<div class="min-w-0 flex-1">' +
           '<div class="text-sm truncate text-slate-200" title="' + escapeHtml(f.name) + '">' +
             (dir ? '<span class="text-slate-500 hover:text-emerald-400 cursor-pointer" data-dir="' + escapeHtml(dir) + '" title="只看该目录">' + escapeHtml(dir) + '/</span> ' : '') +
@@ -448,6 +538,9 @@
         '</div>';
       Array.prototype.forEach.call(div.querySelectorAll('button'), function (b) { b.dataset.name = f.name; });
       wrap.appendChild(div);
+      // 图片缩略图：进入可视区域后再生成
+      var thumbEl = div.querySelector('[data-thumb]');
+      if (thumbEl) observeThumb(thumbEl);
     });
 
     // 上传后定位并高亮新出现的文件
