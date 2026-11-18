@@ -3,7 +3,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { existsSync, promises } from 'node:fs';
 import { join } from 'node:path';
-import { parse, type UrlWithStringQuery } from 'node:url';
+import { URL } from 'node:url';
 import { color, execSync } from '@lzwme/fe-utils';
 import type { Express, NextFunction, Request, Response } from 'express';
 import type { SSConfig } from '../config';
@@ -42,10 +42,32 @@ function formatArgs(args: Record<string, unknown>) {
   return Object.entries(args).map(([key, value]) => `${key.startsWith('-') ? key : `-${key}`} ${value}`);
 }
 
+/**
+ * 解析请求地址。
+ *
+ * 使用 WHATWG URL API 替代已弃用的 `url.parse()`（Node 22+ 会打印 DEP0169 弃用警告，
+ * 而该中间件挂在 '/' 上，每个请求都会经过一次）。
+ *
+ * 返回解码后的路径与原始查询串：
+ *  - 路径解码后可直接用于文件系统查找（与 express 静态资源的行为一致）；
+ *  - 查询串保留原始形态（不做 '+' 转换），与 CGI 的 QUERY_STRING 语义一致。
+ */
+function parseRequestUrl(req: Request): { pathname: string; query: string } {
+  const base = `http://${req.headers.host || 'localhost'}`;
+  const parsed = new URL(req.url, base);
+  let pathname = parsed.pathname;
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch {
+    // 非法的百分号编码（如文件名中本身含有 '%'）时保持原值，避免解析失败
+  }
+  return { pathname, query: parsed.search ? parsed.search.slice(1) : '' };
+}
+
 function runPhpCgi(
   req: Request,
   response: Response,
-  url: UrlWithStringQuery,
+  url: { pathname: string; query: string },
   filepath: string,
   phpConfig: SSConfig['phpConfig'],
   rootDir: string,
@@ -198,7 +220,7 @@ function createPhpMiddleware(rootDir: string, phpConfig: SSConfig['phpConfig'] =
     // stop stream until child-process is opened
     req.pause();
 
-    const url = parse(req.url);
+    const url = parseRequestUrl(req);
     const filepath = await findPhpFile(url.pathname || req.path, rootDir);
 
     if (filepath && (filepath.includes('.php') || phpConfig.onlyPhpFile === false)) {
