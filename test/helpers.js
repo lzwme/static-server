@@ -17,10 +17,13 @@ function tempDir(prefix = 'sserver-test-') {
  *
  * 配置加载顺序是「内置默认值 < 用户级配置 < 当前目录配置」，
  * 切到临时目录可以避免读到仓库里或用户机器上的配置。
+ *
+ * extra 用于追加 localsend 下的配置项（如 password、token）。
  */
-function useTempConfig(storageDir) {
+function useTempConfig(storageDir, extra) {
   const dir = tempDir('sserver-cfg-');
-  const config = { port: 0, localsend: { enabled: true, dir: storageDir } };
+  const localsend = { enabled: true, dir: storageDir, ...(extra || {}) };
+  const config = { port: 0, localsend };
   fs.writeFileSync(path.join(dir, 'ss.config.js'), `module.exports = ${JSON.stringify(config)};\n`);
   process.chdir(dir);
   return dir;
@@ -28,10 +31,16 @@ function useTempConfig(storageDir) {
 
 /**
  * 启动一个只挂载 localsend 的服务，返回地址与关闭方法。
+ *
+ * 配置模块内部有缓存（ssConfig 单例），同一进程内多次启动服务会复用第一次的配置，
+ * 因此这里先清掉 config / localsend 的模块缓存，让每个服务都读到自己的配置。
  */
-async function startServer(storageDir) {
-  useTempConfig(storageDir);
+async function startServer(storageDir, extra) {
+  useTempConfig(storageDir, extra);
   process.env.SS_LOCALSEND_DIR = storageDir;
+  for (const mod of ['../dist/config', '../dist/localsend']) {
+    delete require.cache[require.resolve(mod)];
+  }
   const { initLocalsend } = require('../dist/localsend');
   const express = require('express');
   const app = express();
@@ -51,12 +60,12 @@ async function startServer(storageDir) {
   };
 }
 
-/** 用 multipart 方式上传文件 */
-async function upload(base, name, content, query = '') {
+/** 用 multipart 方式上传文件，可带查询串与请求头（如会话令牌） */
+async function upload(base, name, content, query = '', headers = {}) {
   const form = new FormData();
   const body = typeof content === 'string' ? content : Buffer.from(content);
   form.append('files', new Blob([body]), name);
-  const resp = await fetch(`${base}/localsend/api/upload${query}`, { method: 'POST', body: form });
+  const resp = await fetch(`${base}/localsend/api/upload${query}`, { method: 'POST', body: form, headers });
   return { status: resp.status, json: await resp.json() };
 }
 
