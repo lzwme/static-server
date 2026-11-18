@@ -22,6 +22,7 @@ import { createGuard } from './lib/localsend-guard';
 import { listFiles, resolveInDir, safeRelPath } from './lib/localsend-path';
 import { createShareStore } from './lib/localsend-share';
 import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
+import { createWebDavHandler } from './lib/localsend-webdav';
 import { createZipChunks, type ZipEntry } from './lib/zip';
 import { getIp } from './lib/utils';
 
@@ -285,6 +286,21 @@ export async function initLocalsend(app: Express): Promise<void> {
     const ok = shareStore.revoke(String(req.params.token || ''));
     res.json({ code: ok ? 0 : 1, msg: ok ? '' : '分享不存在' });
   });
+
+  // WebDAV 挂载接口：把存储目录暴露为网络盘（资源管理器 / iOS 文件 App 均可挂载）。
+  // 必须注册在令牌校验之前：WebDAV 客户端使用 Basic Auth，无法携带 ?key= 查询参数。
+  if (ls.webdav !== false) {
+    const davHandler = createWebDavHandler({
+      dir,
+      token: ls.token,
+      maxSize,
+      maxTotalSize,
+      blockExtensions: ls.blockExtensions ?? DEFAULT_BLOCK_EXTENSIONS,
+      basePath: '/localsend/dav',
+    });
+    app.use('/localsend/dav', davHandler);
+    logger.log(color.green('LocalSend DAV : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend/dav`));
+  }
 
   // 访问令牌校验（配置了 token 才生效），覆盖页面与所有接口
   app.use('/localsend', guard.requireToken);

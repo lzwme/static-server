@@ -147,6 +147,26 @@ module.exports = {
 };
 ```
 
+#### WebDAV 网络盘
+
+开启 localsend 后，同时提供一个 WebDAV 端点，可把存储目录挂载成网络盘（Windows 资源管理器、macOS 访达、iOS「文件」App、安卓文件管理器均可挂载）：
+
+```
+http://<本机IP>:<port>/localsend/dav
+```
+
+- 支持 `OPTIONS` / `PROPFIND` / `GET` / `HEAD` / `PUT` / `DELETE` / `MKCOL` / `COPY` / `MOVE`，可正常浏览目录、拖拽上传、下载与删除。
+- 配置了 `token` 时，WebDAV 使用 **Basic Auth** 认证（用户名为 `localsend`，密码为令牌）；未配置令牌时局域网内可直接挂载。
+- 上传同样受 `blockExtensions`（默认拦截 `.php`、`.sh` 等服务端脚本）、`maxSize` 与 `maxTotalSize` 约束，与网页上传接口一致。
+- 不需要时可在配置里关闭：
+
+```js
+localsend: {
+  enabled: true,
+  webdav: false, // 关闭 WebDAV 端点（默认开启）
+},
+```
+
 中文文件名上传后显示乱码时（多见于旧版本上传的文件），可用以下命令批量修复存储目录中的乱码文件名：
 
 ```bash
