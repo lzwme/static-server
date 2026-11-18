@@ -10,8 +10,9 @@
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, extname, join, resolve } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { color } from 'console-log-colors';
-import express, { type Express, type Request, type Response } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
 import { getConfig } from './config';
 import { logger } from './get-logger';
@@ -106,6 +107,42 @@ function uniqueName(targetDir: string, name: string) {
 }
 
 /**
+ * 默认禁止上传的服务端脚本扩展名。
+ * 存储目录若位于静态服务的根目录下，上传的可执行脚本可能被 php-cgi 等中间件执行，
+ * 相当于对外开放了远程代码执行入口，因此在上传环节直接拦截。
+ */
+export const DEFAULT_BLOCK_EXTENSIONS = [
+  '.php',
+  '.php3',
+  '.php4',
+  '.php5',
+  '.php7',
+  '.php8',
+  '.phtml',
+  '.pht',
+  '.phar',
+  '.cgi',
+  '.pl',
+  '.py',
+  '.rb',
+  '.sh',
+  '.asp',
+  '.aspx',
+  '.jsp',
+  '.jspx',
+];
+
+/** 带状态码的业务错误，便于错误处理中间件输出友好提示 */
+class LocalsendError extends Error {
+  statusCode: number;
+  constructor(message: string, statusCode = 400) {
+    super(message);
+    this.name = 'LocalsendError';
+    this.statusCode = statusCode;
+  }
+}
+
+/**
  * 计算目录下所有文件的总大小（字节）。忽略读取失败的条目。
  */
 export function dirSize(target: string): number {
@@ -193,12 +230,24 @@ export async function initLocalsend(app: Express): Promise<void> {
   });
 
   // 多文件上传
+  const blockExts = new Set(
+    (ls.blockExtensions ?? DEFAULT_BLOCK_EXTENSIONS).map((e) => (e.startsWith('.') ? e : `.${e}`).toLowerCase()),
+  );
   const upload = multer({
     dest: dir,
     limits: { fileSize: maxSize, files: 200 },
     // 显式声明按 latin1 读取 Content-Disposition 参数，保留文件名的原始字节，
     // 再由 decodeUploadName 按 utf-8 / gb18030 解码，避免中文文件名乱码
     defParamCharset: 'latin1',
+    // 拦截可执行脚本，避免上传目录与静态服务根目录重叠时形成远程代码执行入口
+    fileFilter: (_req, file, cb) => {
+      const ext = extname(decodeUploadName(file.originalname)).toLowerCase();
+      if (ext && blockExts.has(ext)) {
+        cb(new LocalsendError(`出于安全考虑，禁止上传 ${ext} 类型的文件`, 403));
+        return;
+      }
+      cb(null, true);
+    },
   });
   app.post(
     '/localsend/api/upload',
@@ -293,5 +342,22 @@ export async function initLocalsend(app: Express): Promise<void> {
     if (!existsSync(filePath)) return void res.status(404).json({ code: 1, msg: '文件不存在' });
     rmSync(filePath);
     res.json({ code: 0 });
+  });
+
+  // 统一错误处理：把上传失败、文件超限、类型拦截等转成友好的 JSON 提示
+  app.use('/localsend', (err: any, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) return next(err);
+    let status = 500;
+    let msg = err?.message || '请求处理失败';
+    if (err instanceof LocalsendError) {
+      status = err.statusCode;
+    } else if (err instanceof multer.MulterError) {
+      status = 400;
+      if (err.code === 'LIMIT_FILE_SIZE') msg = `文件超出大小限制（${(maxSize / 1024 / 1024).toFixed(0)}MB）`;
+      else if (err.code === 'LIMIT_FILE_COUNT') msg = '一次上传的文件数量超出限制';
+      else if (err.code === 'LIMIT_UNEXPECTED_FILE') msg = '非预期的文件字段';
+    }
+    logger.error('[localsend]', err);
+    res.status(status).json({ code: 1, msg });
   });
 }
