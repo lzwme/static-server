@@ -29,7 +29,7 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Request, Response } from 'express';
-import { resolveInDir, safeRelPath } from './localsend-path';
+import { isInternalDirName, resolveInDir, safeRelPath } from './localsend-path';
 
 export interface WebDavOptions {
   /** 存储目录 */
@@ -184,6 +184,8 @@ function collect(dirAbs: string, rel: string, depth: number, out: DavItem[]): vo
     }
     const childRel = rel ? `${rel}/${name}` : name;
     const isDir = st.isDirectory();
+    // 内部目录（如分片暂存区）不对外暴露
+    if (isDir && !rel && isInternalDirName(name)) continue;
     out.push({ name, rel: childRel, isDir, size: isDir ? 0 : st.size, mtime: st.mtime });
     if (isDir && depth > 0) collect(full, childRel, depth - 1, out);
   }

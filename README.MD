@@ -174,6 +174,20 @@ localsend: {
 ss fix-localsend-names
 ```
 
+#### 分片上传与断点续传
+
+大文件在弱网环境下常传到一半就断线，整包重传代价很大。服务端提供了分片上传接口，客户端可只补传缺失的分片：
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /localsend/api/chunk/init` | 初始化上传任务，传入 `name`、`size`、`chunkSize`，返回 `uploadId` 与分片总数 |
+| `POST /localsend/api/chunk/upload?uploadId=xxx&index=0` | 上传单个分片（`multipart`，字段名 `chunk`） |
+| `GET /localsend/api/chunk/status?uploadId=xxx` | 查询已上传的分片索引，用于断点续传 |
+| `POST /localsend/api/chunk/merge?uploadId=xxx` | 合并全部分片为正式文件 |
+| `DELETE /localsend/api/chunk/cancel?uploadId=xxx` | 取消上传并清理分片 |
+
+分片暂存在存储目录下的 `.chunks` 内部目录中，不会出现在文件列表、WebDAV 目录或自动清理范围内；合并完成后分片会自动删除。
+
 ## 开发
 
 本地二次开发：

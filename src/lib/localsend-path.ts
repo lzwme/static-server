@@ -5,11 +5,22 @@
  * 因此所有对外接口都用「相对路径」标识文件，如 `子目录/照片.jpg`。
  * 这里统一做规范化与安全校验，杜绝目录穿越。
  */
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, type Stats, statSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 
 /** 存储目录中允许出现的最大层级，避免异常深的目录 */
 const MAX_DEPTH = 16;
+
+/**
+ * 内部目录名（位于存储目录下，但不参与文件列表、WebDAV 目录浏览与自动清理）。
+ * 用于存放分片上传的临时分片等内部数据。
+ */
+export const INTERNAL_DIR_NAMES = ['.chunks'];
+
+/** 判断目录名是否为内部目录 */
+export function isInternalDirName(name: string): boolean {
+  return INTERNAL_DIR_NAMES.includes(name);
+}
 
 /**
  * 规范化相对路径：去掉首尾空白与多余分隔符，拒绝 `..`、绝对路径与盘符。
@@ -41,6 +52,8 @@ export function safeRelPath(input?: unknown): string {
 export function resolveInDir(baseDir: string, relPath: string): string {
   const rel = safeRelPath(relPath);
   if (!rel) return '';
+  // 内部目录（如分片暂存区）不对外暴露
+  if (rel.split('/').some((part) => isInternalDirName(part))) return '';
   const base = resolve(baseDir);
   const full = resolve(base, ...rel.split('/'));
   // 二次校验，防止符号链接或边界情况越界
@@ -77,13 +90,15 @@ export function listFiles(baseDir: string, filter?: (relPath: string) => boolean
     for (const name of names) {
       const full = join(dir, name);
       const rel = prefix ? `${prefix}/${name}` : name;
-      let stat;
+      let stat: Stats;
       try {
         stat = statSync(full);
       } catch {
         continue;
       }
       if (stat.isDirectory()) {
+        // 内部目录（如分片暂存区）不对外暴露
+        if (isInternalDirName(name)) continue;
         walk(full, rel, depth + 1);
         continue;
       }
