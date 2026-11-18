@@ -577,12 +577,138 @@
 
   function downloadFile(name) {
     var size = fileSizeOf(name);
+    // 支持 File System Access API 时，优先流式写入磁盘：内存恒定且能显示进度
+    if (size > BLOB_LIMIT && canStreamToDisk()) {
+      streamToDisk(name, size);
+      return;
+    }
     if (size > BLOB_LIMIT) {
       nativeDownload(name);
       toast('已转交浏览器下载：' + name + '（' + fmtSize(size) + '）', 'ok');
       return;
     }
     xhrDownload(name);
+  }
+
+  /** 浏览器是否支持 File System Access API */
+  function canStreamToDisk() {
+    return typeof window.showSaveFilePicker === 'function' && window.isSecureContext !== false;
+  }
+
+  /**
+   * 大文件流式下载：让用户选择保存位置，边下边写盘。
+   *
+   * 全程使用 ReadableStream 直写磁盘，不在内存里缓存整个文件，
+   * 因此内存占用恒定；同时可以实时反馈进度与速度。
+   */
+  function streamToDisk(name, size) {
+    var url = withKey(API + '/download/' + encodeURIComponent(name));
+    var progress = null;
+    try {
+      progress = showProgress('正在下载 ' + name);
+    } catch (e) {
+      progress = null;
+    }
+    var controller = new AbortController();
+    if (progress) progress.cancel = function () { controller.abort(); };
+
+    // 先让用户选择保存位置
+    var picker = window.showSaveFilePicker({
+      suggestedName: name,
+      // 允许用户选择任意目录，避免默认下载目录被清理
+      id: 'localsend-download',
+    });
+    Promise.resolve(picker)
+      .then(function (handle) {
+        return handle.createWritable().then(function (writer) {
+          return fetch(url, { signal: controller.signal })
+            .then(function (res) {
+              if (!res.ok) throw new Error('HTTP ' + res.status);
+              var total = Number(res.headers.get('content-length')) || size || 0;
+              var received = 0;
+              var lastTime = Date.now();
+              var lastLoaded = 0;
+              var reader = res.body.getReader();
+              function pump() {
+                return reader.read().then(function (result) {
+                  if (result.done) return writer.close();
+                  received += result.value.length;
+                  return writer.write(result.value).then(function () {
+                    if (progress) {
+                      var now = Date.now();
+                      var dt = (now - lastTime) / 1000;
+                      var speed = dt > 0 ? (received - lastLoaded) / dt : 0;
+                      if (dt > 0.3) {
+                        lastLoaded = received;
+                        lastTime = now;
+                        progress.update(received, total, speed);
+                      }
+                    }
+                    return pump();
+                  });
+                });
+              }
+              return pump();
+            });
+        });
+      })
+      .then(function () {
+        if (progress) progress.done('下载完成：' + name, 'ok');
+      })
+      .catch(function (err) {
+        if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
+          if (progress) progress.close();
+          return;
+        }
+        // 直存失败时回退到浏览器原生下载
+        if (progress) progress.close();
+        nativeDownload(name);
+        toast('直存失败，已转为浏览器下载：' + name, 'err');
+      });
+  }
+
+  /**
+   * 显示一个常驻的下载进度浮层，返回控制对象。
+   */
+  function showProgress(title) {
+    var box = document.createElement('div');
+    box.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 z-[70] w-[min(92vw,420px)] bg-slate-900/95 border border-slate-700 rounded-2xl px-4 py-3 shadow-2xl';
+    box.innerHTML =
+      '<div class="flex items-center justify-between gap-3 mb-2">' +
+        '<span class="text-xs text-slate-200 truncate" data-title></span>' +
+        '<button class="text-[11px] text-slate-400 hover:text-red-400 shrink-0" data-cancel>取消</button>' +
+      '</div>' +
+      '<div class="h-1.5 bg-slate-700 rounded-full overflow-hidden">' +
+        '<div class="h-full bg-emerald-500 transition-all duration-200" style="width:0%"></div>' +
+      '</div>' +
+      '<div class="flex justify-between mt-1.5 text-[10px] text-slate-500">' +
+        '<span data-pct>0%</span><span data-speed class="font-mono"></span>' +
+      '</div>';
+    box.querySelector('[data-title]').textContent = title;
+    document.body.appendChild(box);
+    var bar = box.querySelector('.h-full');
+    var pctEl = box.querySelector('[data-pct]');
+    var speedEl = box.querySelector('[data-speed]');
+    var cancelBtn = box.querySelector('[data-cancel]');
+    cancelBtn.addEventListener('click', function () {
+      if (progress.cancel) progress.cancel();
+      progress.close();
+    });
+    return {
+      update: function (received, total, speed) {
+        var pct = total ? Math.round(received / total * 100) : 0;
+        bar.style.width = pct + '%';
+        pctEl.textContent = pct + '% · ' + fmtSize(received) + (total ? ' / ' + fmtSize(total) : '');
+        speedEl.textContent = fmtSize(speed) + '/s';
+      },
+      done: function (msg, type) {
+        bar.style.width = '100%';
+        bar.className = 'h-full bg-emerald-500';
+        progress.close();
+        toast(msg, type);
+      },
+      close: function () { box.remove(); },
+    };
   }
 
   /**
