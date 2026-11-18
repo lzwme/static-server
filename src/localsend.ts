@@ -318,11 +318,13 @@ export async function initLocalsend(app: Express): Promise<void> {
   });
 
   // 页面静态资源（样式、二维码库、图标等）：与页面同目录，供离线局域网使用
+  // 使用 ETag 协商缓存：升级后样式与页面版本始终一致，避免浏览器拿到旧的 CSS
   app.use(
     '/localsend',
     express.static(resolve(__dirname, PAGE_DIR), {
       index: false,
-      maxAge: '1h',
+      maxAge: 0,
+      etag: true,
     }),
   );
 
