@@ -18,6 +18,7 @@ const CACHE_NAME = 'localsend-shell-v1';
 /** 需要预缓存的外壳文件（相对 Service Worker 所在目录） */
 const SHELL_FILES = [
   './',
+  './app.js',
   './style.css',
   './vendor/qr-code-styling.js',
   './manifest.webmanifest',
