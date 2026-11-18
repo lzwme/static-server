@@ -20,6 +20,7 @@ import { logger } from './get-logger';
 import { createCleaner } from './lib/localsend-cleaner';
 import { createGuard } from './lib/localsend-guard';
 import { listFiles, resolveInDir, safeRelPath } from './lib/localsend-path';
+import { createShareStore } from './lib/localsend-share';
 import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
 import { createZipChunks, type ZipEntry } from './lib/zip';
 import { getIp } from './lib/utils';
@@ -211,6 +212,79 @@ export async function initLocalsend(app: Express): Promise<void> {
   logger.log(color.green('LocalSend DIR : '.padStart(15, ' ')), color.cyanBright(dir));
   logger.log(color.green('LocalSend URL : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend${keyQuery}`));
   if (ls.token) logger.log(color.green('LocalSend KEY : '.padStart(15, ' ')), color.yellowBright('已启用访问令牌'));
+
+  // 分享链接：拿到链接的人无需访问令牌即可下载指定文件（需在令牌校验之前注册）
+  const shareStore = createShareStore();
+  app.get('/localsend/s/:token', async (req: Request, res: Response) => {
+    const entry = shareStore.get(String(req.params.token || ''));
+    if (!entry) return void res.status(404).json({ code: 1, msg: '分享链接不存在或已过期' });
+
+    const files = entry.names
+      .map((rel) => ({ rel, path: resolveInDir(dir, rel) }))
+      .filter((f) => f.path && existsSync(f.path) && statSync(f.path).isFile());
+    if (!files.length) return void res.status(404).json({ code: 1, msg: '分享的文件已不存在' });
+
+    if (files.length === 1) {
+      res.download(files[0].path, basename(files[0].rel), { dotfiles: 'allow' });
+      return;
+    }
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="localsend-${stamp}.zip"`);
+    try {
+      for await (const chunk of createZipChunks(
+        files.map((f) => ({ name: f.rel, path: f.path, mtime: statSync(f.path).mtime })),
+        (p) => createReadStream(p),
+      )) {
+        res.write(chunk);
+      }
+      res.end();
+    } catch (err) {
+      logger.error('[localsend share]', err);
+      res.end();
+    }
+  });
+
+  // 创建分享链接
+  app.post(
+    '/localsend/api/share',
+    express.json({ limit: '256kb' }),
+    (req: Request, res: Response) => {
+      const names = Array.isArray(req.body?.names)
+        ? (req.body.names as unknown[]).map((n) => safeRelPath(n)).filter(Boolean)
+        : [];
+      if (!names.length) return void res.status(400).json({ code: 1, msg: '未指定要分享的文件' });
+      const ttl = Math.min(Math.max(Number(req.body?.ttl) || 24 * 60 * 60, 60), 7 * 24 * 60 * 60);
+      const { token, entry } = shareStore.create(names.slice(0, 100), ttl * 1000);
+      res.json({
+        code: 0,
+        data: {
+          token,
+          url: `/localsend/s/${token}`,
+          expiresAt: entry.expiresAt,
+          names: entry.names,
+        },
+      });
+    },
+  );
+
+  // 查看 / 撤销分享
+  app.get('/localsend/api/share', (_req: Request, res: Response) => {
+    res.json({
+      code: 0,
+      data: shareStore.list().map(({ token, entry }) => ({
+        token,
+        url: `/localsend/s/${token}`,
+        names: entry.names,
+        expiresAt: entry.expiresAt,
+        hits: entry.hits,
+      })),
+    });
+  });
+  app.delete('/localsend/api/share/:token', (req: Request, res: Response) => {
+    const ok = shareStore.revoke(String(req.params.token || ''));
+    res.json({ code: ok ? 0 : 1, msg: ok ? '' : '分享不存在' });
+  });
 
   // 访问令牌校验（配置了 token 才生效），覆盖页面与所有接口
   app.use('/localsend', guard.requireToken);

@@ -69,6 +69,9 @@
       </label>
       <span id="selectedCount" class="text-slate-500 hidden shrink-0"><em class="text-emerald-400 not-italic">0</em><span class="hidden sm:inline"> 项已选</span></span>
       <div class="flex-1 hidden sm:block"></div>
+      <button id="batchShare" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量分享">
+        <span class="sm:hidden">🔗</span><span class="hidden sm:inline">🔗 批量分享</span>
+      </button>
       <button id="batchDownload" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量下载">
         <span class="sm:hidden">📥</span><span class="hidden sm:inline">📥 批量下载</span>
       </button>
@@ -210,10 +213,12 @@
     if (count > 0) {
       $('selectedCount').classList.remove('hidden');
       $('selectedCount').querySelector('em').textContent = count;
+      $('batchShare').disabled = false;
       $('batchDownload').disabled = false;
       $('batchDelete').disabled = false;
     } else {
       $('selectedCount').classList.add('hidden');
+      $('batchShare').disabled = true;
       $('batchDownload').disabled = true;
       $('batchDelete').disabled = true;
     }
@@ -241,7 +246,7 @@
           '<div class="text-xs text-slate-500 mt-0.5">' + fmtSize(f.size) + ' · ' + fmtTime(f.mtime) + '</div>' +
         '</div>' +
         '<div class="flex items-center gap-1 sm:gap-1.5 shrink-0 justify-end w-full sm:w-auto">' +
-          btn('预览', 'preview', false, '👁') + btn('下载', 'download', false, '⬇️') + btn('复制', 'copy', false, '📋') + btn('扫码', 'qr', false, '📱') + btn('删除', 'delete', true, '🗑') +
+          btn('预览', 'preview', false, '👁') + btn('下载', 'download', false, '⬇️') + btn('分享', 'share', false, '🔗') + btn('复制', 'copy', false, '📋') + btn('扫码', 'qr', false, '📱') + btn('删除', 'delete', true, '🗑') +
         '</div>';
       Array.prototype.forEach.call(div.querySelectorAll('button'), function (b) { b.dataset.name = f.name; });
       wrap.appendChild(div);
@@ -404,6 +409,24 @@
   function copyLink(name) {
     copyText(withKey(location.origin + API + '/download/' + encodeURIComponent(name)));
   }
+  // 生成分享链接（带时效，无需访问令牌即可下载）
+  function shareFiles(names) {
+    if (!names || !names.length) return;
+    fetch(withKey(API + '/share'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names: names })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) { toast(json.msg || '分享失败', 'err'); return; }
+        var url = location.origin + json.data.url;
+        copyText(url);
+        var label = json.data.names.length > 1 ? json.data.names.length + ' 个文件' : json.data.names[0];
+        toast('分享链接已复制（' + label + '，24 小时内有效）', 'ok');
+      })
+      .catch(function () { toast('分享失败', 'err'); });
+  }
   function showQr(text, label) {
     $('qrModal').classList.remove('hidden');
     $('modalText').textContent = label || text;
@@ -464,6 +487,7 @@
     var act = btnEl.dataset.act;
     if (act === 'download') downloadFile(name);
     else if (act === 'preview') previewFile(name);
+    else if (act === 'share') shareFiles([name]);
     else if (act === 'copy') copyLink(name);
     else if (act === 'qr') showQr(withKey(location.origin + API + '/download/' + encodeURIComponent(name)), '扫码直连下载：' + name);
     else if (act === 'delete') deleteFile(name);
@@ -485,6 +509,11 @@
     selected[name] = e.target.checked;
     updateBatchUI();
     e.target.closest('div').classList.toggle('bg-slate-800/40', e.target.checked);
+  });
+  $('batchShare').addEventListener('click', function () {
+    var names = Object.keys(selected).filter(function (n) { return selected[n]; });
+    if (!names.length) return;
+    shareFiles(names);
   });
   $('batchDownload').addEventListener('click', function () {
     var names = Object.keys(selected).filter(function (n) { return selected[n]; });
