@@ -21,6 +21,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import multer from 'multer';
 import { getConfig } from './config';
 import { logger } from './get-logger';
+import { canManage, canWrite, createAuth } from './lib/localsend-auth';
 import { createListCache } from './lib/localsend-cache';
 import { createChunkStore, MAX_CHUNK_SIZE } from './lib/localsend-chunk';
 import { createCleaner } from './lib/localsend-cleaner';
@@ -265,6 +266,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   //  1. 分享下载页与 WebDAV 必须放在令牌校验之前
   //     —— 分享链接本就是免登录的，WebDAV 走 Basic Auth 带不了 ?key=
   //  2. 令牌校验之后才是全部接口，任何接口都不能绕过
+  //  3. 身份分级再叠在令牌之上，用来区分危险操作的权限
   // ---------------------------------------------------------------------------
   // WebDAV 挂载接口：把存储目录暴露为网络盘（资源管理器 / iOS 文件 App 均可挂载）。
   if (ls.webdav !== false) {
@@ -286,13 +288,87 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   app.use('/localsend/api', guard.rateLimit);
 
   // ---------------------------------------------------------------------------
+  // 身份与权限
+  //
+  // token 是站点级大门锁，这里是进门后的身份分级：
+  // 管理员能删除与整理，访客只能上传下载，没登录的是只读。
+  // 没有配置任何口令时保持开放模式，行为与以前完全一致。
+  // ---------------------------------------------------------------------------
+  const auth = createAuth({
+    password: ls.password,
+    visitorPassword: ls.visitorPassword,
+    sessionTtl: ls.sessionTtl,
+  });
+  if (auth.open) {
+    logger.log(color.yellow('LocalSend 权限 :'.padStart(15, ' ')), color.yellow('未设置口令，任何人都可以删除与整理文件'));
+  } else {
+    logger.log(color.green('LocalSend 权限 :'.padStart(15, ' ')), color.cyanBright('已启用身份分级（危险操作需要管理员口令）'));
+  }
+  if (ls.visitorPassword && !auth.hasAdmin) {
+    logger.log(color.yellow('LocalSend 权限 :'.padStart(15, ' ')), color.yellow('只配置了访客口令，删除与整理将无法执行'));
+  }
+
+  /** 从请求中取会话令牌 */
+  function sessionTokenOf(req: Request): string {
+    return String(req.get('X-Localsend-Session') || req.query.session || '');
+  }
+
+  /** 身份中间件：把当前角色挂到 res.locals.role */
+  app.use('/localsend/api', (req: Request, res: Response, next: NextFunction) => {
+    res.locals.role = auth.roleOf(sessionTokenOf(req));
+    next();
+  });
+
+  /** 需要管理员权限：删除、整理、撤销分享、清理回收站等危险操作 */
+  function requireAdmin(_req: Request, res: Response, next: NextFunction) {
+    if (canManage(res.locals.role)) return next();
+    res.status(403).json({ code: 1, msg: '该操作需要管理员权限，请先登录' });
+  }
+
+  /** 需要写入权限：上传、粘贴、创建分享等 */
+  function requireWrite(_req: Request, res: Response, next: NextFunction) {
+    if (canWrite(res.locals.role)) return next();
+    res.status(403).json({ code: 1, msg: '当前为只读访问，无法上传' });
+  }
+
+  // 登录 / 注销 / 查询当前身份
+  app.post('/localsend/api/login', express.json({ limit: '4kb' }), (req: Request, res: Response) => {
+    const session = auth.login(req.body?.password);
+    if (!session) {
+      // 不区分口令不存在还是口令错误，避免暴露配置细节
+      return void res.status(401).json({ code: 1, msg: '口令不正确' });
+    }
+    res.json({ code: 0, data: { token: session.token, role: session.role, expiresAt: session.expiresAt } });
+  });
+
+  app.post('/localsend/api/logout', (req: Request, res: Response) => {
+    const token = sessionTokenOf(req);
+    auth.logout(token);
+    res.json({ code: 0, data: { role: auth.roleOf('') } });
+  });
+
+  app.get('/localsend/api/session', (req: Request, res: Response) => {
+    const session = auth.get(sessionTokenOf(req));
+    res.json({
+      code: 0,
+      data: {
+        role: res.locals.role,
+        open: auth.open,
+        hasAdmin: auth.hasAdmin,
+        hasVisitor: !!ls.visitorPassword,
+        expiresAt: session?.expiresAt ?? 0,
+      },
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // 剪贴板内容落盘
   //
   // 分享只能分享「已经存在于存储目录里的文件」，
   // 这里把纯文本与截图直接写成普通文件，
   // 让「粘贴即分享」成为可能，同时继承列表、回收站、WebDAV 等全部能力。
   // ---------------------------------------------------------------------------
-  app.post('/localsend/api/paste', express.json({ limit: '16mb' }), (req: Request, res: Response) => {
+  app.post('/localsend/api/paste', requireWrite, express.json({ limit: '16mb' }), (req: Request, res: Response) => {
     const parsed = parsePaste(req.body);
     if (parsed.error) return void res.status(400).json({ code: 1, msg: parsed.error });
 
@@ -351,7 +427,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   });
 
   // 创建分享链接
-  app.post('/localsend/api/share', express.json({ limit: '256kb' }), (req: Request, res: Response) => {
+  app.post('/localsend/api/share', requireWrite, express.json({ limit: '256kb' }), (req: Request, res: Response) => {
     const names = Array.isArray(req.body?.names) ? (req.body.names as unknown[]).map((n) => safeRelPath(n)).filter(Boolean) : [];
     if (!names.length) return void res.status(400).json({ code: 1, msg: '未指定要分享的文件' });
     const ttl = Math.min(Math.max(Number(req.body?.ttl) || 24 * 60 * 60, 60), 7 * 24 * 60 * 60);
@@ -380,7 +456,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       })),
     });
   });
-  app.delete('/localsend/api/share/:token', (req: Request, res: Response) => {
+  app.delete('/localsend/api/share/:token', requireAdmin, (req: Request, res: Response) => {
     const ok = shareStore.revoke(String(req.params.token || ''));
     res.json({ code: ok ? 0 : 1, msg: ok ? '' : '分享不存在' });
   });
@@ -519,6 +595,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   });
   app.post(
     '/localsend/api/upload',
+    // 写操作需要访客以上权限（只读访问不允许上传）
+    requireWrite,
     // 单 IP 并发上传数限制
     guard.limitConcurrent,
     // 总容量预检：目录已用容量与本次请求体大小共同判断，超出配额直接拒绝
@@ -619,7 +697,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   };
 
   // 初始化上传任务
-  app.post('/localsend/api/chunk/init', express.json({ limit: '64kb' }), (req: Request, res: Response) => {
+  app.post('/localsend/api/chunk/init', requireWrite, express.json({ limit: '64kb' }), (req: Request, res: Response) => {
     const name = decodeUploadName(req.body?.name);
     const rel = safeRelPath(name);
     if (!rel) return void res.status(400).json({ code: 1, msg: '非法的文件名' });
@@ -648,31 +726,37 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     }),
     limits: { fileSize: MAX_CHUNK_SIZE, files: 1 },
   });
-  app.post('/localsend/api/chunk/upload', guard.limitConcurrent, chunkUpload.single('chunk'), (req: Request, res: Response) => {
-    const uploadId = String(req.query.uploadId || '');
-    const index = Number(req.query.index);
-    const file = req.file;
-    if (!uploadId || !file) {
-      if (file?.path) rmSync(file.path, { force: true });
-      return void res.status(400).json({ code: 1, msg: '缺少 uploadId 或分片数据' });
-    }
-    const meta = chunkStore.meta(uploadId);
-    if (!meta) {
-      rmSync(file.path, { force: true });
-      return void res.status(404).json({ code: 1, msg: '上传任务不存在或已过期' });
-    }
-    if (!Number.isInteger(index) || index < 0 || index >= meta.total) {
-      rmSync(file.path, { force: true });
-      return void res.status(400).json({ code: 1, msg: '非法的分片序号' });
-    }
-    // 把落下的分片登记到暂存区
-    const result = chunkStore.writeChunk(uploadId, index, file.path);
-    if (!result) {
-      rmSync(file.path, { force: true });
-      return void res.status(404).json({ code: 1, msg: '上传任务不存在或已过期' });
-    }
-    res.json({ code: 0, data: result });
-  });
+  app.post(
+    '/localsend/api/chunk/upload',
+    requireWrite,
+    guard.limitConcurrent,
+    chunkUpload.single('chunk'),
+    (req: Request, res: Response) => {
+      const uploadId = String(req.query.uploadId || '');
+      const index = Number(req.query.index);
+      const file = req.file;
+      if (!uploadId || !file) {
+        if (file?.path) rmSync(file.path, { force: true });
+        return void res.status(400).json({ code: 1, msg: '缺少 uploadId 或分片数据' });
+      }
+      const meta = chunkStore.meta(uploadId);
+      if (!meta) {
+        rmSync(file.path, { force: true });
+        return void res.status(404).json({ code: 1, msg: '上传任务不存在或已过期' });
+      }
+      if (!Number.isInteger(index) || index < 0 || index >= meta.total) {
+        rmSync(file.path, { force: true });
+        return void res.status(400).json({ code: 1, msg: '非法的分片序号' });
+      }
+      // 把落下的分片登记到暂存区
+      const result = chunkStore.writeChunk(uploadId, index, file.path);
+      if (!result) {
+        rmSync(file.path, { force: true });
+        return void res.status(404).json({ code: 1, msg: '上传任务不存在或已过期' });
+      }
+      res.json({ code: 0, data: result });
+    },
+  );
 
   // 查询上传进度（断点续传的关键）
   app.get('/localsend/api/chunk/status', (req: Request, res: Response) => {
@@ -683,7 +767,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   });
 
   // 合并分片为正式文件
-  app.post('/localsend/api/chunk/merge', (req: Request, res: Response) => {
+  app.post('/localsend/api/chunk/merge', requireWrite, (req: Request, res: Response) => {
     const uploadId = String(req.query.uploadId || '');
     const meta = chunkStore.meta(uploadId);
     if (!meta) return void res.status(404).json({ code: 1, msg: '上传任务不存在或已过期' });
@@ -712,7 +796,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   });
 
   // 取消上传并清理分片
-  app.delete('/localsend/api/chunk/cancel', (req: Request, res: Response) => {
+  app.delete('/localsend/api/chunk/cancel', requireWrite, (req: Request, res: Response) => {
     const uploadId = String(req.query.uploadId || '');
     const ok = chunkStore.cancel(uploadId);
     res.json({ code: ok ? 0 : 1, msg: ok ? '' : '上传任务不存在' });
@@ -792,7 +876,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   });
 
   // 删除（移入回收站，可还原）
-  app.delete('/localsend/api/delete/*name', (req: Request, res: Response) => {
+  app.delete('/localsend/api/delete/*name', requireAdmin, (req: Request, res: Response) => {
     const rel = relParam(req);
     if (!rel) return void res.status(400).json({ code: 1, msg: '非法的文件路径' });
     const filePath = resolveInDir(dir, rel);
@@ -816,7 +900,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   });
 
   // 回收站：还原
-  app.post('/localsend/api/trash/:id/restore', (req: Request, res: Response) => {
+  app.post('/localsend/api/trash/:id/restore', requireAdmin, (req: Request, res: Response) => {
     const id = String(req.params.id || '');
     const restored = trash.restore(id);
     if (!restored) return void res.status(404).json({ code: 1, msg: '回收站条目不存在或已过期' });
@@ -824,14 +908,14 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   });
 
   // 回收站：彻底删除
-  app.delete('/localsend/api/trash/:id', (req: Request, res: Response) => {
+  app.delete('/localsend/api/trash/:id', requireAdmin, (req: Request, res: Response) => {
     const id = String(req.params.id || '');
     const ok = trash.remove(id);
     res.json({ code: ok ? 0 : 1, msg: ok ? '' : '回收站条目不存在' });
   });
 
   // 回收站：清空
-  app.delete('/localsend/api/trash', (_req: Request, res: Response) => {
+  app.delete('/localsend/api/trash', requireAdmin, (_req: Request, res: Response) => {
     const count = trash.empty();
     res.json({ code: 0, data: { removed: count } });
   });
@@ -875,7 +959,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   // ---------------------------------------------------------------------------
 
   // 重命名 / 移动单个文件（to 带目录即为移动）
-  app.post('/localsend/api/rename', express.json({ limit: '64kb' }), (req: Request, res: Response) => {
+  app.post('/localsend/api/rename', requireAdmin, express.json({ limit: '64kb' }), (req: Request, res: Response) => {
     const from = String(req.body?.from ?? '');
     const to = String(req.body?.to ?? '');
     const result = renameFile(dir, from, to);
@@ -884,7 +968,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   });
 
   // 批量移动到指定目录
-  app.post('/localsend/api/move', express.json({ limit: '1mb' }), (req: Request, res: Response) => {
+  app.post('/localsend/api/move', requireAdmin, express.json({ limit: '1mb' }), (req: Request, res: Response) => {
     const names = Array.isArray(req.body?.names) ? req.body.names : [];
     if (!names.length) return void res.status(400).json({ code: 1, msg: '未指定要移动的文件' });
     const rawDir = String(req.body?.dir ?? '').trim();
@@ -897,7 +981,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   });
 
   // 按规则批量重命名
-  app.post('/localsend/api/rename-batch', express.json({ limit: '1mb' }), (req: Request, res: Response) => {
+  app.post('/localsend/api/rename-batch', requireAdmin, express.json({ limit: '1mb' }), (req: Request, res: Response) => {
     const names = Array.isArray(req.body?.names) ? req.body.names : [];
     if (!names.length) return void res.status(400).json({ code: 1, msg: '未指定要重命名的文件' });
     const rule = parseRenameRule(req.body?.rule);
@@ -908,6 +992,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   // 批量删除
   app.post(
     '/localsend/api/delete-batch',
+    // 批量删除属于危险操作，需要管理员权限
+    requireAdmin,
     // 本模块未启用全局 JSON 解析，这里单独挂载
     express.json({ limit: '1mb' }),
     (req: Request, res: Response) => {
@@ -935,7 +1021,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   );
 
   // 清理上传残留的临时文件（上传中断时可能留下无扩展名的哈希文件）
-  app.post('/localsend/api/cleanup-temp', (_req: Request, res: Response) => {
+  app.post('/localsend/api/cleanup-temp', requireAdmin, (_req: Request, res: Response) => {
     const removed = cleanupTempFiles(dir);
     res.json({ code: 0, data: { removed: removed.length } });
   });

@@ -20,6 +20,12 @@ export interface LocalSendConfig {
   maxTotalSize?: number;
   /** 访问令牌。设置后，页面与所有接口都需要携带（?key=xxx 或 X-Localsend-Key 请求头） */
   token?: string;
+  /** 管理员口令。设置后删除文件、整理目录、撤销分享等危险操作需要登录 */
+  password?: string;
+  /** 访客口令（可选）。设置后访客可上传下载，但不能删除与整理 */
+  visitorPassword?: string;
+  /** 登录会话有效期（毫秒）。默认 24 小时 */
+  sessionTtl?: number;
   /** 单个 IP 的最大并发上传数。默认 3 */
   maxConcurrent?: number;
   /** 单个 IP 的请求频率限制。默认 120 次 / 60 秒 */
