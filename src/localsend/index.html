@@ -76,6 +76,10 @@
     <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
       <h2 class="font-semibold text-base sm:text-lg">文件列表 <span id="fileCount" class="text-xs sm:text-sm text-slate-400 font-normal"></span></h2>
       <div class="flex gap-2 text-xs sm:text-sm items-center flex-wrap">
+        <button id="inboxBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 hover:bg-slate-700 transition" title="收件箱：只看最近收到的文件">
+          <span class="sm:hidden">📥</span><span class="hidden sm:inline">📥 收件箱</span>
+          <span id="inboxCount" class="hidden ml-1 text-emerald-400 font-mono"></span>
+        </button>
         <button id="trashBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 hover:bg-slate-700 transition" title="回收站">
           <span class="sm:hidden">🗑</span><span class="hidden sm:inline">🗑 回收站</span>
           <span id="trashCount" class="hidden ml-1 text-amber-400 font-mono"></span>
@@ -203,6 +207,12 @@
   var searchKeyword = '';
   // 目录筛选：空字符串表示不过滤，'__root__' 表示只看根目录文件
   var dirFilter = '';
+  // 收件箱模式：只看最近收到的文件
+  var inboxMode = false;
+  var INBOX_WINDOW = 10 * 60 * 1000; // 收件箱时间窗口（10 分钟）
+  var inboxNewCount = 0; // 进入收件箱后新收到的文件数
+  var ownUploads = {}; // 本机刚上传的文件，避免自己提示自己
+  var eventSource = null; // 文件变更事件连接
   var PAGE_SIZE = 50; // 每页显示的文件数
   var currentPage = 1;
   var totalPages = 1;
@@ -433,7 +443,7 @@
     return filtered.slice(start, start + PAGE_SIZE);
   }
 
-  /** 按关键词与目录筛选文件（列表渲染与全选范围共用同一套规则） */
+  /** 按关键词、目录与收件箱筛选文件（列表渲染与全选范围共用同一套规则） */
   function filterItems(list) {
     var filtered = list;
     if (searchKeyword) {
@@ -446,6 +456,10 @@
         return dirFilter === '__root__' ? !d : d === dirFilter;
       });
     }
+    if (inboxMode) {
+      var limit = Date.now() - INBOX_WINDOW;
+      filtered = filtered.filter(function (f) { return f.mtime >= limit; });
+    }
     return filtered;
   }
 
@@ -453,6 +467,84 @@
   function dirOf(name) {
     var i = name.lastIndexOf('/');
     return i < 0 ? '' : name.slice(0, i);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 收件箱与实时通知
+  //
+  // 服务端通过 SSE 推送文件变更，页面收到后立即刷新列表并提示，
+  // 这样手机端放着一台「接文件」的机器时，不用手动刷新就知道来新文件了。
+  // ---------------------------------------------------------------------------
+
+  /** 刷新收件箱按钮上的未读计数 */
+  function updateInboxBadge() {
+    var el = $('inboxCount');
+    if (!el) return;
+    if (inboxNewCount > 0) {
+      el.classList.remove('hidden');
+      el.textContent = inboxNewCount;
+    } else {
+      el.classList.add('hidden');
+      el.textContent = '';
+    }
+    $('inboxBtn').classList.toggle('border-emerald-500/60', inboxMode);
+    $('inboxBtn').classList.toggle('text-emerald-400', inboxMode);
+  }
+
+  /** 系统级通知（用户授权后才发送） */
+  function notifySystem(names) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    try {
+      var body = names.slice(0, 3).join('、') + (names.length > 3 ? ' 等 ' + names.length + ' 个文件' : '');
+      var notice = new Notification('收到新文件', { body: body, icon: '/localsend/favicon.png', tag: 'localsend-inbox' });
+      notice.onclick = function () {
+        window.focus();
+        notice.close();
+      };
+    } catch (e) {
+      // 通知失败不影响主流程
+    }
+  }
+
+  /** 处理服务端推送的文件变更 */
+  function handleIncoming(names) {
+    var now = Date.now();
+    // 过滤掉本机刚上传的文件，避免自己提示自己
+    var fresh = names.filter(function (n) {
+      var at = ownUploads[n];
+      if (at && now - at < 10000) {
+        delete ownUploads[n];
+        return false;
+      }
+      return true;
+    });
+    loadFiles();
+    if (!fresh.length) return;
+    inboxNewCount += fresh.length;
+    updateInboxBadge();
+    var text = fresh.length === 1 ? '收到新文件：' + fresh[0] : '收到 ' + fresh.length + ' 个新文件：' + fresh.slice(0, 2).join('、');
+    toast(text, 'ok');
+    notifySystem(fresh);
+  }
+
+  /** 订阅服务端文件变更事件 */
+  function connectEvents() {
+    if (!window.EventSource) return;
+    try {
+      eventSource = new EventSource(withKey(API + '/events'));
+    } catch (e) {
+      return;
+    }
+    eventSource.addEventListener('changed', function (e) {
+      var payload = null;
+      try {
+        payload = JSON.parse(e.data);
+      } catch (err) {
+        return;
+      }
+      handleIncoming((payload && payload.names) || []);
+    });
+    // 连接断开时浏览器会自动按 retry 重连，这里无需额外处理
   }
 
   /** 刷新目录筛选下拉选项 */
@@ -508,11 +600,13 @@
     $('emptyTip').classList.toggle('hidden', !isEmpty);
     if (!isEmpty && filtered.length === 0) {
       $('emptyTip').classList.remove('hidden');
-      $('emptyTip').textContent = '没有匹配「' + searchKeyword + '」的文件';
+      $('emptyTip').textContent = searchKeyword
+        ? '没有匹配「' + searchKeyword + '」的文件'
+        : inboxMode ? '收件箱里还没有新文件（最近 ' + Math.round(INBOX_WINDOW / 60000) + ' 分钟）' : '没有匹配当前筛选条件的文件';
     } else {
       $('emptyTip').textContent = '暂无文件，上传第一个文件开始传输吧';
     }
-    $('fileCount').textContent = (searchKeyword || dirFilter)
+    $('fileCount').textContent = (searchKeyword || dirFilter || inboxMode)
       ? '(' + filtered.length + '/' + list.length + ')'
       : '(' + list.length + ')';
     updateBatchUI();
@@ -823,6 +917,8 @@
         var results = (json.data && json.data.results) || [];
         var saved = results.length ? results[0].name : rel;
         var renamed = saved !== rel;
+        // 记录为本机上传，后续变更推送里不再重复提示
+        ownUploads[saved] = Date.now();
         toast(renamed ? '上传完成：' + rel + ' → ' + saved + '（同名已自动改名）' : '上传完成：' + rel, 'ok');
         // 等待新文件出现在列表中，然后定位高亮
         waitForHighlight([saved]);
@@ -1398,6 +1494,21 @@
     }
     e.target.value = '';
   });
+  // 收件箱：只看最近收到的文件
+  $('inboxBtn').addEventListener('click', function () {
+    inboxMode = !inboxMode;
+    if (inboxMode) {
+      inboxNewCount = 0;
+      // 开启收件箱时顺带申请通知权限（用户主动点击，符合浏览器的授权要求）
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission().catch(function () {});
+      }
+    }
+    currentPage = 1;
+    updateInboxBadge();
+    renderList(fileItems);
+    toast(inboxMode ? '已切换到收件箱（只看最近 ' + Math.round(INBOX_WINDOW / 60000) + ' 分钟收到的文件）' : '已退出收件箱');
+  });
   // 按目录筛选
   $('dirSelect').addEventListener('change', function (e) {
     dirFilter = e.target.value;
@@ -1599,6 +1710,8 @@
 
   loadFiles();
   refreshTrashCount();
+  updateInboxBadge();
+  connectEvents();
 
   // 注册 Service Worker，提供离线可用的页面外壳
   // 仅在安全上下文可用（https 或 localhost）；局域网 http 下浏览器会拒绝注册

@@ -20,6 +20,8 @@ export interface ListCacheOptions {
   watchEnabled?: boolean;
   /** 过滤函数：返回 false 的条目不进入缓存 */
   filter?: (relPath: string) => boolean;
+  /** 变更回调：文件新增或内容变化时触发，参数为发生变化的相对路径 */
+  onChange?: (names: string[]) => void;
 }
 
 export interface ListCache {
@@ -29,6 +31,8 @@ export interface ListCache {
   refresh(): FileEntry[];
   /** 使缓存失效，下次访问时重新扫描 */
   invalidate(): void;
+  /** 启动目录监听（用于主动感知变更，不依赖列表请求） */
+  startWatch(): void;
   /** 缓存统计信息 */
   stats(): { entries: number; hits: number; misses: number; watching: boolean; lastScan: number };
   /** 停止监听 */
@@ -116,8 +120,14 @@ export function createListCache(options: ListCacheOptions): ListCache {
   function flush(): void {
     flushTimer = null;
     if (!pending.size) return;
-    for (const [rel, info] of pending) applyChange(rel, info.type);
+    const changed: string[] = [];
+    for (const [rel, info] of pending) {
+      applyChange(rel, info.type);
+      // 删除不作为「收到新文件」通知
+      if (info.type !== 'remove') changed.push(rel);
+    }
     pending.clear();
+    if (changed.length) options.onChange?.(changed);
   }
 
   /** 记录一次变更（同一文件短时间内多次变更只保留最后一次） */
@@ -184,8 +194,7 @@ export function createListCache(options: ListCacheOptions): ListCache {
   }
 
   return {
-    list(): FileEntry[] {
-      const expired = !loaded || Date.now() - lastScan > ttl;
+    list(): FileEntry[] {      const expired = !loaded || Date.now() - lastScan > ttl;
       if (expired) {
         misses++;
         scan();
@@ -207,6 +216,11 @@ export function createListCache(options: ListCacheOptions): ListCache {
       // 应用待处理的增量变更
       if (pending.size) flush();
       return entries;
+    },
+
+    startWatch(): void {
+      if (!watchEnabled) return;
+      setupWatch();
     },
 
     refresh(): FileEntry[] {

@@ -330,10 +330,53 @@ export async function initLocalsend(app: Express): Promise<void> {
 
   // 文件列表（递归返回所有子目录下的文件，name 为相对路径）
   // 使用内存缓存 + fs.watch 增量更新，避免大目录每次请求都全量扫描
+  // ------------------------------------------------------------------
+  // 文件变化推送（SSE）
+  //
+  // 目录监听在缓存层已经就绪，这里把变更事件推给页面，
+  // 让手机端能第一时间知道「收到了新文件」，不必手动刷新列表。
+  // ------------------------------------------------------------------
+  /** 已连接的 SSE 客户端 */
+  const eventClients = new Set<Response>();
+
+  /** 向所有客户端推送文件变更 */
+  function broadcastChange(names: string[]): void {
+    if (!eventClients.size || !names.length) return;
+    const payload = JSON.stringify({ names });
+    for (const client of eventClients) {
+      try {
+        client.write(`event: changed\ndata: ${payload}\n\n`);
+      } catch {
+        eventClients.delete(client);
+      }
+    }
+  }
+
   const listCache = createListCache({
     dir,
     ttl: 5 * 60 * 1000,
     filter: (rel) => !isTempFileName(rel.slice(rel.lastIndexOf('/') + 1)),
+    onChange: broadcastChange,
+  });
+  // 启动即开始监听，保证没有列表请求时也能感知新文件
+  listCache.startWatch();
+
+  // SSE 长连接：页面订阅后实时接收文件变更
+  app.get('/localsend/api/events', (req: Request, res: Response) => {
+    res.set({
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders?.();
+    // 建议客户端 3 秒重连，并先发一个 ready 事件确认连接建立
+    res.write('retry: 3000\n\n');
+    res.write('event: ready\ndata: {}\n\n');
+    eventClients.add(res);
+    req.on('close', () => {
+      eventClients.delete(res);
+    });
   });
 
   // 写操作完成后让列表缓存失效，保证下次请求能看到最新文件
