@@ -41,14 +41,16 @@
     </div>
   </header>
 
-  <section class="grid md:grid-cols-[auto_1fr] gap-5 sm:gap-6 items-start mb-6 sm:mb-8">
-    <div id="pageQrCard" class="bg-slate-900 border border-slate-700 rounded-2xl p-2 sm:p-3 flex flex-col items-center gap-3 w-full sm:w-fit mx-auto md:mx-0 cursor-pointer hover:border-emerald-500/50 transition-colors group">
-      <div class="text-xs text-slate-400 group-hover:text-emerald-400 transition-colors">手机扫码访问页面（点击放大）</div>
-      <div id="pageQr" class="bg-white p-1 rounded-lg w-40 sm:w-32 flex items-center justify-center"></div>
+  <section class="grid md:grid-cols-[auto_1fr] gap-4 sm:gap-6 items-start mb-5 sm:mb-8">
+    <!-- 移动端：二维码卡片折叠为一行，点击展开 -->
+    <div id="pageQrCard" class="bg-slate-900 border border-slate-700 rounded-2xl p-2 sm:p-3 flex flex-row sm:flex-col items-center gap-2 sm:gap-3 w-full sm:w-fit mx-auto md:mx-0 cursor-pointer hover:border-emerald-500/50 transition-colors group">
+      <div class="text-xs text-slate-400 group-hover:text-emerald-400 transition-colors shrink-0 flex-1 sm:flex-none text-left sm:text-center">📱 手机扫码访问页面（点击放大）</div>
+      <div id="pageQr" class="bg-white p-1 rounded-lg w-16 sm:w-32 flex items-center justify-center shrink-0"></div>
     </div>
 
-    <div>
-      <div id="dropZone" class="border-2 border-dashed border-slate-600 hover:border-emerald-400 rounded-2xl p-6 sm:p-10 text-center transition cursor-pointer select-none">
+    <div class="w-full">
+      <!-- 移动端隐藏大上传区，改用右下角悬浮按钮，列表优先 -->
+      <div id="dropZone" class="hidden sm:block border-2 border-dashed border-slate-600 hover:border-emerald-400 rounded-2xl p-6 sm:p-10 text-center transition cursor-pointer select-none">
         <div class="text-3xl sm:text-4xl mb-3">📤</div>
         <p class="font-medium text-sm sm:text-base text-slate-200">点击选择或拖拽文件到此处上传</p>
         <p class="text-[11px] sm:text-xs text-slate-500 mt-2">支持多文件同时上传 · 文件保存在本机 · 实时显示传输进度</p>
@@ -105,6 +107,9 @@
     </div>
   </section>
 </div>
+
+<!-- 移动端悬浮上传按钮 -->
+<button id="fabUpload" class="sm:hidden fixed bottom-5 right-5 z-40 w-14 h-14 rounded-full bg-emerald-500 text-slate-950 text-2xl shadow-lg shadow-emerald-500/30 flex items-center justify-center active:scale-95 transition-transform" title="上传文件" aria-label="上传文件">📤</button>
 
 <!-- 二维码弹窗 -->
 <div id="qrModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
@@ -1121,6 +1126,8 @@
 
   // 事件绑定
   $('dropZone').addEventListener('click', function () { $('fileInput').click(); });
+  // 移动端悬浮上传按钮
+  $('fabUpload').addEventListener('click', function () { $('fileInput').click(); });
   $('dropZone').addEventListener('dragover', function (e) { e.preventDefault(); $('dropZone').classList.add('border-emerald-400'); });
   $('dropZone').addEventListener('dragleave', function () { $('dropZone').classList.remove('border-emerald-400'); });
   $('dropZone').addEventListener('drop', function (e) {
