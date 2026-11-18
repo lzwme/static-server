@@ -8,6 +8,187 @@
     if (!KEY) return url;
     return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'key=' + encodeURIComponent(KEY);
   }
+  // ---------------------------------------------------------------------------
+  // 身份与会话
+  //
+  // 服务端配置了口令时，危险操作（删除、整理、撤销分享）需要管理员身份，
+  // 上传与分享需要访客以上身份。会话令牌存在 localStorage，由服务端内存维护，
+  // 服务重启后失效，需要重新登录。
+  // ---------------------------------------------------------------------------
+  var SESSION_STORAGE_KEY = 'localsend.session';
+  var sessionToken = '';
+  try {
+    sessionToken = localStorage.getItem(SESSION_STORAGE_KEY) || '';
+  } catch (e) {
+    // localStorage 不可用时忽略
+  }
+  // 当前身份：role 为 admin / visitor / guest / open
+  var sessionInfo = { role: 'open', open: true, hasAdmin: false, hasVisitor: false };
+
+  /** 是否可以执行危险操作（删除、整理目录、撤销分享等） */
+  function isAdmin() {
+    return sessionInfo.role === 'admin' || sessionInfo.role === 'open';
+  }
+  /** 是否可以写入（上传、粘贴、创建分享等） */
+  function canWrite() {
+    return sessionInfo.role !== 'guest';
+  }
+  /**
+   * 统一的接口请求：自动带上访问令牌与会话令牌。
+   * 权限不足（403）时弹出登录框，避免用户不知道该做什么。
+   */
+  function apiFetch(url, init) {
+    var opts = init || {};
+    var headers = opts.headers || {};
+    if (sessionToken) headers['X-Localsend-Session'] = sessionToken;
+    opts.headers = headers;
+    return fetch(withKey(url), opts).then(function (r) {
+      // 权限不足时引导登录；其它 403（如禁止上传的类型）不打扰用户
+      if (r.status === 403) {
+        r.clone()
+          .json()
+          .then(function (json) {
+            if (json && json.needAuth) openLoginModal(json.msg);
+          })
+          .catch(function () {});
+      }
+      return r;
+    });
+  }
+
+  /** 角色的中文名称 */
+  function roleName(role) {
+    if (role === 'admin') return '管理员';
+    if (role === 'visitor') return '访客';
+    if (role === 'guest') return '只读';
+    return '开放';
+  }
+
+  /** 按当前身份刷新界面上的权限状态 */
+  function applyRole() {
+    var role = sessionInfo.role;
+    var admin = isAdmin();
+    var write = canWrite();
+    var logged = role === 'admin' || role === 'visitor';
+
+    // 身份徽章：让人一眼看出当前能做什么
+    var badge = $('roleBadge');
+    badge.textContent = sessionInfo.open ? '开放模式' : roleName(role);
+    if (sessionInfo.open) {
+      badge.className = 'text-[11px] px-2 py-1 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-300';
+    } else if (role === 'admin') {
+      badge.className = 'text-[11px] px-2 py-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300';
+    } else if (role === 'visitor') {
+      badge.className = 'text-[11px] px-2 py-1 rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-300';
+    } else {
+      badge.className = 'text-[11px] px-2 py-1 rounded-lg border border-slate-700 bg-slate-800/70 text-slate-400';
+    }
+    badge.classList.remove('hidden');
+
+    // 登录与退出：开放模式无需登录
+    $('loginBtn').style.display = logged || sessionInfo.open ? 'none' : '';
+    $('logoutBtn').style.display = logged ? '' : 'none';
+
+    // 按 data-need 标记控制各类操作入口
+    var nodes = document.querySelectorAll('[data-need]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      var need = el.getAttribute('data-need');
+      var ok = need === 'admin' ? admin : write;
+      // 用内联样式控制，避免与 hidden / sm:block 等类冲突
+      el.style.display = ok ? '' : 'none';
+    }
+  }
+
+  /** 拉取当前身份 */
+  function refreshSession() {
+    return apiFetch(API + '/session')
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) return;
+        sessionInfo = json.data || sessionInfo;
+        // 会话已失效（超时或服务重启）时清掉本地令牌，避免一直带着无效凭证
+        if (sessionInfo.role === 'guest' && sessionToken) {
+          sessionToken = '';
+          try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (e) { /* 忽略存储失败 */ }
+        }
+        applyRole();
+      })
+      .catch(function () { /* 拿不到身份信息时按默认权限显示 */ });
+  }
+
+  /** 打开登录弹窗 */
+  function openLoginModal(msg) {
+    var err = $('loginError');
+    if (msg) {
+      err.textContent = msg;
+      err.classList.remove('hidden');
+    }
+    $('loginModal').classList.remove('hidden');
+    setTimeout(function () { $('loginPassword').focus(); }, 60);
+  }
+
+  /** 关闭登录弹窗 */
+  function closeLoginModal() {
+    $('loginModal').classList.add('hidden');
+    $('loginError').classList.add('hidden');
+    $('loginPassword').value = '';
+  }
+
+  /** 提交登录 */
+  function submitLogin() {
+    var input = $('loginPassword');
+    var pwd = input.value;
+    var err = $('loginError');
+    if (!pwd) {
+      err.textContent = '请输入口令';
+      err.classList.remove('hidden');
+      return;
+    }
+    $('loginOk').disabled = true;
+    apiFetch(API + '/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pwd }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) {
+          err.textContent = json.msg || '口令不正确';
+          err.classList.remove('hidden');
+          input.select();
+          return;
+        }
+        sessionToken = json.data.token;
+        try { localStorage.setItem(SESSION_STORAGE_KEY, sessionToken); } catch (e) { /* 忽略存储失败 */ }
+        input.value = '';
+        err.classList.add('hidden');
+        $('loginModal').classList.add('hidden');
+        sessionInfo.role = json.data.role;
+        toast('已登录：' + roleName(json.data.role), 'ok');
+        // 重新拉取身份并刷新列表，按新角色显示或隐藏操作入口
+        refreshSession().then(function () { loadFiles(); });
+      })
+      .catch(function () {
+        err.textContent = '登录失败，请重试';
+        err.classList.remove('hidden');
+      })
+      .then(function () { $('loginOk').disabled = false; });
+  }
+
+  /** 退出登录 */
+  function logout() {
+    apiFetch(API + '/logout', { method: 'POST' })
+      .catch(function () { /* 退出失败也清理本地会话 */ })
+      .then(function () {
+        sessionToken = '';
+        try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (e) { /* 忽略存储失败 */ }
+        sessionInfo.role = sessionInfo.open ? 'open' : 'guest';
+        applyRole();
+        loadFiles();
+        toast('已退出登录', 'ok');
+      });
+  }
   var pageUrl = location.origin + location.pathname + (KEY ? '?key=' + encodeURIComponent(KEY) : '');
   // 排序偏好记忆：记住用户上次选择的排序方式与升降序
   var sortType = 'time';
@@ -179,7 +360,7 @@
       imgEl.style.opacity = '1';
       return;
     }
-    fetch(withKey(API + '/preview/' + encodeURIComponent(name)))
+    apiFetch(API + '/preview/' + encodeURIComponent(name))
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.blob();
@@ -259,7 +440,7 @@
   }
 
   function loadFiles() {
-    return fetch(withKey(API + '/list?' + buildListQuery()))
+    return apiFetch(API + '/list?' + buildListQuery())
       .then(function (r) { return r.json(); })
       .then(function (json) {
         if (json.code !== 0) throw new Error(json.msg || '加载失败');
@@ -382,7 +563,7 @@
     var to = buildRenameTarget(from, input);
     // 自己改的文件不再触发「收到新文件」提示
     suppressNotifyUntil = Date.now() + 2000;
-    fetch(withKey(API + '/rename'), {
+    apiFetch(API + '/rename', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from: from, to: to }),
@@ -433,7 +614,7 @@
     if (!names.length) return;
     var dir = $('moveDirInput').value.trim();
     suppressNotifyUntil = Date.now() + 2000;
-    fetch(withKey(API + '/move'), {
+    apiFetch(API + '/move', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ names: names, dir: dir }),
@@ -569,7 +750,7 @@
     if (!names.length) return;
     var rule = collectRule();
     suppressNotifyUntil = Date.now() + 2000;
-    fetch(withKey(API + '/rename-batch'), {
+    apiFetch(API + '/rename-batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ names: names, rule: rule }),
@@ -823,7 +1004,7 @@
 
   /** 拉取筛选选项（目录 / 扩展名） */
   function loadFacets() {
-    return fetch(withKey(API + '/facets'))
+    return apiFetch(API + '/facets')
       .then(function (r) { return r.json(); })
       .then(function (json) {
         if (json.code !== 0) return;
@@ -898,10 +1079,12 @@
           '<div class="text-xs text-slate-500 mt-0.5">' + fmtSize(f.size) + ' · ' + fmtTime(f.mtime) + '</div>' +
         '</div>' +
         '<div class="flex items-center gap-1 sm:gap-1.5 shrink-0 justify-end w-full sm:w-auto">' +
-          btn('预览', 'preview', false, '👁') + btn('下载', 'download', false, '⬇️') + btn('分享', 'share', false, '🔗') +
+          btn('预览', 'preview', false, '👁') + btn('下载', 'download', false, '⬇️') +
+          (canWrite() ? btn('分享', 'share', false, '🔗') : '') +
           (canSystemShare() ? btn('系统分享', 'syshare', false, '📤') : '') +
           btn('复制', 'copy', false, '📋') + btn('扫码', 'qr', false, '📱') +
-          btn('重命名', 'rename', false, '✏️') + btn('移动', 'move', false, '📂') + btn('删除', 'delete', true, '🗑') +
+          // 整理与删除属于危险操作，只有管理员能看到
+          (isAdmin() ? btn('重命名', 'rename', false, '✏️') + btn('移动', 'move', false, '📂') + btn('删除', 'delete', true, '🗑') : '') +
         '</div>';
       Array.prototype.forEach.call(div.querySelectorAll('button'), function (b) { b.dataset.name = f.name; });
       wrap.appendChild(div);
@@ -1132,7 +1315,7 @@
       fd.append('chunk', blob, 'chunk-' + index);
       var attempt = 0;
       function once() {
-        return fetch(withKey(API + '/chunk/upload?uploadId=' + encodeURIComponent(uploadId) + '&index=' + index), { method: 'POST', body: fd })
+        return apiFetch(API + '/chunk/upload?uploadId=' + encodeURIComponent(uploadId) + '&index=' + index, { method: 'POST', body: fd })
           .then(function (r) {
             if (r.status === 429 && attempt < MAX_RETRY) {
               attempt += 1;
@@ -1148,7 +1331,7 @@
       return once();
     }
 
-    fetch(withKey(API + '/chunk/init'), {
+    apiFetch(API + '/chunk/init', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: rel, size: file.size, chunkSize: CHUNK_SIZE }),
@@ -1167,7 +1350,7 @@
 
         /** 合并分片为正式文件 */
         function merge() {
-          fetch(withKey(API + '/chunk/merge?uploadId=' + encodeURIComponent(uploadId)), { method: 'POST' })
+          apiFetch(API + '/chunk/merge?uploadId=' + encodeURIComponent(uploadId), { method: 'POST' })
             .then(function (r) { return r.json(); })
             .then(function (mj) {
               if (!mj || mj.code !== 0) throw new Error((mj && mj.msg) || '分片合并失败');
@@ -1208,7 +1391,7 @@
               ui.statusEl.textContent = '分片上传失败';
               // 清理服务端暂存的分片，避免残留占用磁盘
               if (uploadId) {
-                fetch(withKey(API + '/chunk/cancel?uploadId=' + encodeURIComponent(uploadId)), { method: 'DELETE' }).catch(function () {});
+                apiFetch(API + '/chunk/cancel?uploadId=' + encodeURIComponent(uploadId), { method: 'DELETE' }).catch(function () {});
               }
               toast('上传失败：' + rel, 'err');
               ui.finish(false, err.message || '分片上传失败');
@@ -1234,7 +1417,7 @@
     var MB = 8;
     toast('正在测速…');
     var dlStart = Date.now();
-    fetch(withKey(API + '/speed?size=' + MB))
+    apiFetch(API + '/speed?size=' + MB)
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.arrayBuffer();
@@ -1244,7 +1427,7 @@
         var dlSpeed = buf.byteLength / 1024 / 1024 / (dlMs / 1000);
         var blob = new Blob([new Uint8Array(MB * 1024 * 1024)]);
         var upStart = Date.now();
-        return fetch(withKey(API + '/speed'), { method: 'POST', body: blob })
+        return apiFetch(API + '/speed', { method: 'POST', body: blob })
           .then(function (r) { return r.json(); })
           .then(function (j) {
             var upMs = Math.max(1, Date.now() - upStart);
@@ -1294,6 +1477,8 @@
     }
     var xhr = new XMLHttpRequest();
     xhr.open('POST', withKey(API + '/upload'));
+    // 上传需要访客以上权限，会话令牌随请求头带上
+    if (sessionToken) xhr.setRequestHeader('X-Localsend-Session', sessionToken);
     var lastLoaded = 0;
     var lastTime = Date.now();
     xhr.upload.onprogress = function (e) {
@@ -1671,7 +1856,7 @@
   // 生成分享链接（带时效，无需访问令牌即可下载）
   function shareFiles(names, label) {
     if (!names || !names.length) return;
-    fetch(withKey(API + '/share'), {
+    apiFetch(API + '/share', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ names: names })
@@ -1716,7 +1901,7 @@
   function pasteToFile(payload, label) {
     // 自己粘贴的内容不再触发「收到新文件」提示
     suppressNotifyUntil = Date.now() + 2000;
-    fetch(withKey(API + '/paste'), {
+    apiFetch(API + '/paste', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -1804,7 +1989,7 @@
 
   /** 刷新分享数量角标 */
   function refreshShareCount() {
-    fetch(withKey(API + '/share'))
+    apiFetch(API + '/share')
       .then(function (r) { return r.json(); })
       .then(function (json) {
         if (json.code !== 0) return;
@@ -1823,7 +2008,7 @@
 
   /** 拉取并渲染分享列表 */
   function loadShareList() {
-    fetch(withKey(API + '/share'))
+    apiFetch(API + '/share')
       .then(function (r) { return r.json(); })
       .then(function (json) {
         if (json.code !== 0) { toast(json.msg || '加载失败', 'err'); return; }
@@ -1848,7 +2033,8 @@
             '<div class="flex items-center gap-1 shrink-0">' +
               '<button data-act="copy" class="px-2 py-1 rounded text-[11px] text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 transition">复制</button>' +
               '<button data-act="qr" class="px-2 py-1 rounded text-[11px] text-slate-300 hover:bg-slate-700 border border-slate-600/60 transition">二维码</button>' +
-              '<button data-act="revoke" class="px-2 py-1 rounded text-[11px] text-red-400 hover:bg-red-500/10 border border-red-500/30 transition">撤销</button>' +
+              // 撤销分享属于危险操作，只有管理员可用
+              (isAdmin() ? '<button data-act="revoke" class="px-2 py-1 rounded text-[11px] text-red-400 hover:bg-red-500/10 border border-red-500/30 transition">撤销</button>' : '') +
             '</div>';
           row.dataset.token = item.token;
           row.dataset.url = url;
@@ -1860,7 +2046,7 @@
 
   /** 撤销一个分享链接 */
   function revokeShare(token) {
-    fetch(withKey(API + '/share/' + encodeURIComponent(token)), { method: 'DELETE' })
+    apiFetch(API + '/share/' + encodeURIComponent(token), { method: 'DELETE' })
       .then(function (r) { return r.json(); })
       .then(function (json) {
         if (json.code !== 0) { toast(json.msg || '撤销失败', 'err'); return; }
@@ -1935,7 +2121,7 @@
 
   function deleteFile(name) {
     if (!window.confirm('确定删除文件：' + name + ' ？（删除后可在回收站还原）')) return;
-    fetch(withKey(API + '/delete/' + encodeURIComponent(name)), { method: 'DELETE' })
+    apiFetch(API + '/delete/' + encodeURIComponent(name), { method: 'DELETE' })
       .then(function (r) { return r.json(); })
       .then(function (json) {
         if (json.code !== 0) { toast(json.msg || '删除失败', 'err'); return; }
@@ -1964,7 +2150,7 @@
 
   /** 还原回收站中的某个条目 */
   function restoreTrashEntry(id, cb) {
-    fetch(withKey(API + '/trash/' + encodeURIComponent(id) + '/restore'), { method: 'POST' })
+    apiFetch(API + '/trash/' + encodeURIComponent(id) + '/restore', { method: 'POST' })
       .then(function (r) { return r.json(); })
       .then(function (json) {
         if (json.code !== 0) { if (cb) cb(false, json.msg || '还原失败'); return; }
@@ -1977,7 +2163,7 @@
 
   /** 刷新回收站条目数量 */
   function refreshTrashCount() {
-    fetch(withKey(API + '/trash'))
+    apiFetch(API + '/trash')
       .then(function (r) { return r.json(); })
       .then(function (json) {
         var n = (json.data || []).length;
@@ -2001,7 +2187,7 @@
   function loadTrashList() {
     var wrap = $('trashList');
     wrap.innerHTML = '<div class="text-xs text-slate-500 p-4 text-center">加载中…</div>';
-    fetch(withKey(API + '/trash'))
+    apiFetch(API + '/trash')
       .then(function (r) { return r.json(); })
       .then(function (json) {
         var list = json.data || [];
@@ -2020,18 +2206,23 @@
               '<div class="text-xs truncate text-slate-200" title="' + escapeHtml(item.name) + '">' + escapeHtml(item.name) + '</div>' +
               '<div class="text-[10px] text-slate-500 mt-0.5">' + fmtSize(item.size || 0) + ' · 删除于 ' + fmtTime(item.deletedAt) + '</div>' +
             '</div>' +
-            '<button data-act="restore" class="px-2 py-1 rounded text-xs text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 transition shrink-0">还原</button>' +
-            '<button data-act="purge" class="px-2 py-1 rounded text-xs text-red-400 hover:bg-red-500/10 border border-red-500/30 transition shrink-0">彻底删除</button>';
+            '<div class="flex items-center gap-1 shrink-0">' +
+              // 还原与彻底删除属于危险操作，只有管理员可用
+              (isAdmin()
+                ? '<button data-act="restore" class="px-2 py-1 rounded text-xs text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 transition shrink-0">还原</button>' +
+                  '<button data-act="purge" class="px-2 py-1 rounded text-xs text-red-400 hover:bg-red-500/10 border border-red-500/30 transition shrink-0">彻底删除</button>'
+                : '<span class="text-[11px] text-slate-500">只读</span>') +
+            '</div>';
           var restoreBtn = div.querySelector('[data-act="restore"]');
           var purgeBtn = div.querySelector('[data-act="purge"]');
-          restoreBtn.addEventListener('click', function () {
+          if (restoreBtn) restoreBtn.addEventListener('click', function () {
             restoreTrashEntry(item.id, function (ok, msg) {
               if (ok) { toast('已还原：' + msg, 'ok'); loadTrashList(); }
               else toast(msg || '还原失败', 'err');
             });
           });
-          purgeBtn.addEventListener('click', function () {
-            fetch(withKey(API + '/trash/' + encodeURIComponent(item.id)), { method: 'DELETE' })
+          if (purgeBtn) purgeBtn.addEventListener('click', function () {
+            apiFetch(API + '/trash/' + encodeURIComponent(item.id), { method: 'DELETE' })
               .then(function (r) { return r.json(); })
               .then(function (j) {
                 if (j.code !== 0) { toast(j.msg || '删除失败', 'err'); return; }
@@ -2270,6 +2461,16 @@
     else if (btn.dataset.act === 'revoke') revokeShare(row.dataset.token);
   });
 
+  // 登录与退出
+  $('loginBtn').addEventListener('click', function () { openLoginModal(''); });
+  $('logoutBtn').addEventListener('click', logout);
+  $('loginCancel').addEventListener('click', closeLoginModal);
+  $('loginOk').addEventListener('click', submitLogin);
+  $('loginModal').addEventListener('click', function (e) { if (e.target === $('loginModal')) closeLoginModal(); });
+  $('loginPassword').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') submitLogin();
+  });
+
   // 页面任意处直接粘贴（Ctrl+V）即可分享文本或截图
   document.addEventListener('paste', function (e) {
     var target = e.target;
@@ -2277,6 +2478,11 @@
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
     var dt = e.clipboardData || e.dataTransfer;
     if (!dt) return;
+    // 只读身份不能保存内容，先提示再放行默认粘贴
+    if (!canWrite()) {
+      toast('当前为只读访问，无法保存粘贴的内容', 'err');
+      return;
+    }
     // 图片（截图）优先
     if (dt.items && dt.items.length) {
       for (var i = 0; i < dt.items.length; i++) {
@@ -2314,7 +2520,7 @@
   $('trashModal').addEventListener('click', function (e) { if (e.target === $('trashModal')) $('trashModal').classList.add('hidden'); });
   $('trashEmpty').addEventListener('click', function () {
     if (!window.confirm('确定清空回收站？其中的文件将无法还原。')) return;
-    fetch(withKey(API + '/trash'), { method: 'DELETE' })
+    apiFetch(API + '/trash', { method: 'DELETE' })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (j.code !== 0) { toast(j.msg || '清空失败', 'err'); return; }
@@ -2419,7 +2625,7 @@
         }
         return;
       }
-      fetch(withKey(API + '/delete/' + encodeURIComponent(names[done])), { method: 'DELETE' })
+      apiFetch(API + '/delete/' + encodeURIComponent(names[done]), { method: 'DELETE' })
         .then(function (r) { return r.json(); })
         .then(function (j) {
           if (j.code !== 0) failed++;
@@ -2460,7 +2666,11 @@
   $('orderBtn').textContent = sortOrder === 'desc' ? '↓ 降序' : '↑ 升序';
   $('pageSizeSelect').value = String(PAGE_SIZE);
 
-  loadFiles();
+  // 先取身份再渲染列表，保证按钮的显示与当前权限一致
+  refreshSession().then(function () {
+    loadFiles();
+    applyRole();
+  });
   loadFacets();
   refreshTrashCount();
   refreshShareCount();

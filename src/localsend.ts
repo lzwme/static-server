@@ -322,13 +322,14 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   /** 需要管理员权限：删除、整理、撤销分享、清理回收站等危险操作 */
   function requireAdmin(_req: Request, res: Response, next: NextFunction) {
     if (canManage(res.locals.role)) return next();
-    res.status(403).json({ code: 1, msg: '该操作需要管理员权限，请先登录' });
+    // needAuth 供前端识别「需要登录」而不是其它 403（如禁止上传的类型）
+    res.status(403).json({ code: 1, msg: '该操作需要管理员权限，请先登录', needAuth: true });
   }
 
   /** 需要写入权限：上传、粘贴、创建分享等 */
   function requireWrite(_req: Request, res: Response, next: NextFunction) {
     if (canWrite(res.locals.role)) return next();
-    res.status(403).json({ code: 1, msg: '当前为只读访问，无法上传' });
+    res.status(403).json({ code: 1, msg: '当前为只读访问，无法上传', needAuth: true });
   }
 
   // 登录 / 注销 / 查询当前身份

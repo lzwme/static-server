@@ -39,9 +39,17 @@
       </h1>
       <p class="text-xs sm:text-sm text-slate-400 mt-1">局域网文件传输 · 同网段设备扫码即可访问</p>
     </div>
-    <div class="text-left sm:text-right">
-      <div class="text-xs text-slate-500">本机访问地址</div>
-      <div id="pageUrl" class="text-emerald-400 font-mono text-xs sm:text-sm break-all cursor-point"></div>
+    <div class="flex flex-col items-start sm:items-end gap-2">
+      <div class="text-left sm:text-right">
+        <div class="text-xs text-slate-500">本机访问地址</div>
+        <div id="pageUrl" class="text-emerald-400 font-mono text-xs sm:text-sm break-all cursor-point"></div>
+      </div>
+      <!-- 身份：显示当前权限，必要时登录 -->
+      <div class="flex items-center gap-2 flex-wrap">
+        <span id="roleBadge" class="hidden text-[11px] px-2 py-1 rounded-lg border border-slate-700 bg-slate-800/70 text-slate-300"></span>
+        <button id="loginBtn" class="px-2.5 sm:px-3 py-1 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 hover:border-emerald-500/40 transition text-xs sm:text-sm text-slate-300">🔑 登录</button>
+        <button id="logoutBtn" style="display:none" class="px-2.5 sm:px-3 py-1 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 transition text-xs sm:text-sm text-slate-300">退出登录</button>
+      </div>
     </div>
   </header>
 
@@ -54,13 +62,13 @@
 
     <div class="w-full">
       <div class="flex items-center gap-2 mb-3 flex-wrap">
-        <button id="pickDirBtn" class="px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 hover:border-emerald-500/40 transition text-xs sm:text-sm text-slate-300 shrink-0" title="上传整个文件夹，服务端会保留原有目录结构">
+        <button id="pickDirBtn" data-need="write" class="px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 hover:border-emerald-500/40 transition text-xs sm:text-sm text-slate-300 shrink-0" title="上传整个文件夹，服务端会保留原有目录结构">
           📁 上传文件夹
         </button>
-        <button id="watchDirBtn" class="px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 hover:border-emerald-500/40 transition text-xs sm:text-sm text-slate-300 shrink-0" title="选择一个本地目录，目录里新增的文件会自动上传">
+        <button id="watchDirBtn" data-need="write" class="px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 hover:border-emerald-500/40 transition text-xs sm:text-sm text-slate-300 shrink-0" title="选择一个本地目录，目录里新增的文件会自动上传">
           📡 监听目录
         </button>
-        <button id="pasteBtn" class="px-2.5 sm:px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 transition text-xs sm:text-sm text-emerald-300 shrink-0" title="粘贴文本或截图，生成分享链接（页面任意处 Ctrl+V 也可）">
+        <button id="pasteBtn" data-need="write" class="px-2.5 sm:px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 transition text-xs sm:text-sm text-emerald-300 shrink-0" title="粘贴文本或截图，生成分享链接（页面任意处 Ctrl+V 也可）">
           📋 粘贴内容
         </button>
         <span id="watchStatus" class="hidden text-[11px] sm:text-xs text-emerald-400 items-center gap-1.5"></span>
@@ -68,7 +76,7 @@
         <input id="dirInput" type="file" webkitdirectory directory multiple />
       </div>
       <!-- 移动端隐藏大上传区，改用右下角悬浮按钮，列表优先 -->
-      <div id="dropZone" class="hidden sm:block border-2 border-dashed border-slate-600 hover:border-emerald-400 rounded-2xl p-6 sm:p-10 text-center transition cursor-pointer select-none">
+      <div id="dropZone" data-need="write" class="hidden sm:block border-2 border-dashed border-slate-600 hover:border-emerald-400 rounded-2xl p-6 sm:p-10 text-center transition cursor-pointer select-none">
         <div class="text-3xl sm:text-4xl mb-3">📤</div>
         <p class="font-medium text-sm sm:text-base text-slate-200">点击选择或拖拽文件到此处上传</p>
         <p class="text-[11px] sm:text-xs text-slate-500 mt-2">支持多文件同时上传 · 文件保存在本机 · 实时显示传输进度</p>
@@ -129,19 +137,19 @@
       </label>
       <span id="selectedCount" class="text-slate-500 hidden shrink-0"><em class="text-emerald-400 not-italic">0</em><span class="hidden sm:inline"> 项已选</span></span>
       <div class="flex-1 hidden sm:block"></div>
-      <button id="batchMove" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="移动到目录">
+      <button id="batchMove" data-need="admin" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="移动到目录">
         <span class="sm:hidden">📂</span><span class="hidden sm:inline">📂 移动</span>
       </button>
-      <button id="batchRename" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量重命名">
+      <button id="batchRename" data-need="admin" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量重命名">
         <span class="sm:hidden">🔤</span><span class="hidden sm:inline">🔤 批量重命名</span>
       </button>
-      <button id="batchShare" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量分享">
+      <button id="batchShare" data-need="write" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量分享">
         <span class="sm:hidden">🔗</span><span class="hidden sm:inline">🔗 批量分享</span>
       </button>
       <button id="batchDownload" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量下载（打包为 zip）">
         <span class="sm:hidden">📥</span><span class="hidden sm:inline">📥 打包下载</span>
       </button>
-      <button id="batchDelete" disabled class="px-2 py-1 rounded text-red-400 hover:bg-red-500/10 border border-red-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量删除">
+      <button id="batchDelete" data-need="admin" disabled class="px-2 py-1 rounded text-red-400 hover:bg-red-500/10 border border-red-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量删除">
         <span class="sm:hidden">🗑</span><span class="hidden sm:inline">🗑 批量删除</span>
       </button>
     </div>
@@ -163,7 +171,7 @@
 </div>
 
 <!-- 移动端悬浮上传按钮 -->
-<button id="fabUpload" class="sm:hidden fixed bottom-5 right-5 z-40 w-14 h-14 rounded-full bg-emerald-500 text-slate-950 text-2xl shadow-lg shadow-emerald-500/30 flex items-center justify-center active:scale-95 transition-transform" title="上传文件" aria-label="上传文件">📤</button>
+<button id="fabUpload" data-need="write" class="sm:hidden fixed bottom-5 right-5 z-40 w-14 h-14 rounded-full bg-emerald-500 text-slate-950 text-2xl shadow-lg shadow-emerald-500/30 flex items-center justify-center active:scale-95 transition-transform" title="上传文件" aria-label="上传文件">📤</button>
 
 <!-- 二维码弹窗 -->
 <div id="qrModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
@@ -196,7 +204,7 @@
     <div class="flex items-center justify-between gap-3">
       <div class="text-sm font-medium">回收站 <span id="trashModalCount" class="text-xs text-slate-400 font-normal"></span></div>
       <div class="flex items-center gap-2">
-        <button id="trashEmpty" class="text-[11px] text-slate-400 hover:text-red-400 px-2 py-1 rounded border border-slate-700 hover:border-red-500/40 transition">清空</button>
+        <button id="trashEmpty" data-need="admin" class="text-[11px] text-slate-400 hover:text-red-400 px-2 py-1 rounded border border-slate-700 hover:border-red-500/40 transition">清空</button>
         <button id="closeTrash" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1 transition">关闭</button>
       </div>
     </div>
@@ -249,6 +257,21 @@
     <div class="flex justify-end gap-2">
       <button id="batchRenameCancel" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1.5 transition">取消</button>
       <button id="batchRenameOk" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-medium rounded-lg px-4 py-1.5 transition">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 登录弹窗：口令在服务端配置，前端只负责提交与保存会话令牌 -->
+<div id="loginModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-sm flex flex-col gap-3">
+    <div class="text-sm font-medium">登录 LocalSend</div>
+    <p id="loginHint" class="text-[11px] text-slate-500">管理员口令可删除文件与整理目录；访客口令可上传下载。</p>
+    <input id="loginPassword" type="password" placeholder="请输入口令" autocomplete="current-password" spellcheck="false"
+      class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-emerald-500/60" />
+    <p id="loginError" class="hidden text-[11px] text-red-400"></p>
+    <div class="flex justify-end gap-2">
+      <button id="loginCancel" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1.5 transition">取消</button>
+      <button id="loginOk" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-medium rounded-lg px-4 py-1.5 transition">登录</button>
     </div>
   </div>
 </div>
