@@ -116,14 +116,18 @@
   </div>
 </div>
 
-<!-- 文本预览弹窗 -->
+<!-- 文件预览弹窗 -->
 <div id="previewModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
   <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 max-w-2xl w-full max-h-[80vh] flex flex-col gap-3">
     <div class="flex items-center justify-between gap-3">
       <div id="previewTitle" class="text-sm font-medium truncate"></div>
-      <button id="closePreview" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1 transition shrink-0">关闭</button>
+      <div class="flex items-center gap-2 shrink-0">
+        <a id="previewOpen" target="_blank" rel="noopener" class="text-[11px] text-slate-400 hover:text-emerald-400 px-2 py-1 rounded border border-slate-700 hover:border-emerald-500/40 transition">新窗口打开</a>
+        <button id="closePreview" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1 transition">关闭</button>
+      </div>
     </div>
-    <pre id="previewContent" class="whitespace-pre-wrap break-all text-xs font-mono bg-slate-950 border border-slate-800 rounded-xl p-4 overflow-auto flex-1 text-slate-300"></pre>
+    <div id="previewBody" class="hidden flex-1 min-h-0 overflow-auto"></div>
+    <pre id="previewContent" class="hidden whitespace-pre-wrap break-all text-xs font-mono bg-slate-950 border border-slate-800 rounded-xl p-4 overflow-auto flex-1 text-slate-300"></pre>
   </div>
 </div>
 
@@ -843,23 +847,79 @@
     toast('正在打包下载 ' + names.length + ' 个文件…', 'ok');
   }
 
-  var imgExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'];
-  var textExts = ['txt', 'md', 'json', 'js', 'ts', 'html', 'css', 'xml', 'log', 'csv', 'yml', 'yaml', 'ini', 'conf'];
+  var imgExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif', 'heic'];
+  var textExts = ['txt', 'md', 'json', 'js', 'ts', 'html', 'css', 'xml', 'log', 'csv', 'yml', 'yaml', 'ini', 'conf', 'sh', 'py', 'java', 'c', 'cpp', 'go', 'rs'];
+  var videoExts = ['mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v'];
+  var audioExts = ['mp3', 'wav', 'flac', 'm4a', 'ogg', 'aac'];
+  /** 文本预览的最大字符数，超过则截断 */
+  var TEXT_PREVIEW_LIMIT = 200000;
+  /** 内联预览的文件大小上限（字节），超过则改为新窗口打开 */
+  var INLINE_PREVIEW_MAX = 100 * 1024 * 1024;
+
+  /**
+   * 预览文件。
+   *
+   * 图片、PDF、音视频直接在弹窗内联播放，文本以内联方式展示，
+   * 其它类型回退为新窗口打开。
+   */
   function previewFile(name) {
     var ext = (name.split('.').pop() || '').toLowerCase();
     var url = withKey(API + '/preview/' + encodeURIComponent(name));
-    if (imgExts.indexOf(ext) >= 0 || textExts.indexOf(ext) < 0) {
+    var size = fileSizeOf(name);
+
+    // 超出内联预览上限时直接新窗口打开，避免浏览器卡死
+    if (size > INLINE_PREVIEW_MAX) {
       window.open(url, '_blank');
+      toast('文件较大（' + fmtSize(size) + '），已在新窗口打开', 'ok');
       return;
     }
-    fetch(url)
-      .then(function (r) { return r.text(); })
-      .then(function (t) {
-        $('previewModal').classList.remove('hidden');
-        $('previewTitle').textContent = name;
-        $('previewContent').textContent = t.length > 200000 ? t.slice(0, 200000) + '... (内容过长已截断)' : t;
-      })
-      .catch(function () { toast('预览失败', 'err'); });
+
+    if (imgExts.indexOf(ext) >= 0) {
+      showMediaPreview(name, url, '<img src="' + url + '" alt="' + escapeHtml(name) + '" class="max-w-full max-h-[65vh] mx-auto rounded-lg" />');
+      return;
+    }
+    if (ext === 'pdf') {
+      showMediaPreview(name, url, '<iframe src="' + url + '" class="w-full h-[65vh] rounded-lg border border-slate-800 bg-slate-950"></iframe>');
+      return;
+    }
+    if (videoExts.indexOf(ext) >= 0) {
+      showMediaPreview(name, url, '<video src="' + url + '" controls class="max-w-full max-h-[65vh] mx-auto rounded-lg bg-slate-950"></video>');
+      return;
+    }
+    if (audioExts.indexOf(ext) >= 0) {
+      showMediaPreview(name, url, '<audio src="' + url + '" controls class="w-full"></audio>');
+      return;
+    }
+    if (textExts.indexOf(ext) >= 0) {
+      fetch(url)
+        .then(function (r) { return r.text(); })
+        .then(function (t) {
+          $('previewModal').classList.remove('hidden');
+          $('previewTitle').textContent = name;
+          $('previewOpen').href = url;
+          $('previewBody').classList.add('hidden');
+          $('previewBody').innerHTML = '';
+          var pre = $('previewContent');
+          pre.classList.remove('hidden');
+          pre.textContent = t.length > TEXT_PREVIEW_LIMIT ? t.slice(0, TEXT_PREVIEW_LIMIT) + '\n\n... (内容过长已截断，共 ' + t.length + ' 字符)' : t;
+        })
+        .catch(function () { toast('预览失败', 'err'); });
+      return;
+    }
+    // 其它类型：尝试在弹窗内联，不行就新窗口打开
+    window.open(url, '_blank');
+  }
+
+  /** 以媒体方式展示预览内容 */
+  function showMediaPreview(name, url, html) {
+    $('previewModal').classList.remove('hidden');
+    $('previewTitle').textContent = name;
+    $('previewOpen').href = url;
+    $('previewContent').classList.add('hidden');
+    $('previewContent').textContent = '';
+    var body = $('previewBody');
+    body.classList.remove('hidden');
+    body.innerHTML = html;
   }
 
   function copyLink(name) {
@@ -1114,8 +1174,17 @@
   });
   $('closeModal').addEventListener('click', function () { $('qrModal').classList.add('hidden'); });
   $('qrModal').addEventListener('click', function (e) { if (e.target === $('qrModal')) $('qrModal').classList.add('hidden'); });
-  $('closePreview').addEventListener('click', function () { $('previewModal').classList.add('hidden'); });
-  $('previewModal').addEventListener('click', function (e) { if (e.target === $('previewModal')) $('previewModal').classList.add('hidden'); });
+  function closePreviewModal() {
+    $('previewModal').classList.add('hidden');
+    // 清空媒体内容，避免残留的音视频继续在后台播放
+    var body = $('previewBody');
+    body.innerHTML = '';
+    body.classList.add('hidden');
+    $('previewContent').textContent = '';
+    $('previewContent').classList.add('hidden');
+  }
+  $('closePreview').addEventListener('click', closePreviewModal);
+  $('previewModal').addEventListener('click', function (e) { if (e.target === $('previewModal')) closePreviewModal(); });
   // 回收站
   $('trashBtn').addEventListener('click', openTrash);
   $('closeTrash').addEventListener('click', function () { $('trashModal').classList.add('hidden'); });
