@@ -15,6 +15,13 @@
   #pageQr canvas { width: 100% !important; height: auto !important; display: block; }
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+  /* 上传后新文件的高亮定位 */
+  @keyframes fileNewFlash {
+    0% { background-color: rgba(16, 185, 129, .28); box-shadow: inset 3px 0 0 #10b981; }
+    70% { background-color: rgba(16, 185, 129, .28); box-shadow: inset 3px 0 0 #10b981; }
+    100% { background-color: transparent; box-shadow: inset 3px 0 0 transparent; }
+  }
+  .file-new-flash { animation: fileNewFlash 3s ease-out; }
 </style>
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-200">
@@ -126,6 +133,14 @@
   var modalQrCode = null;
   var selected = {};
   var fileItems = [];
+  // 待高亮定位的文件名（上传成功后填充）
+  var pendingHighlight = [];
+  // 当前处于高亮状态的文件名
+  var highlightNames = {};
+  // 等待出现在列表中的新文件名
+  var highlightQueue = [];
+  // 高亮轮询定时器
+  var highlightTimer = null;
 
   $('pageUrl').textContent = pageUrl;
   $('pageUrl').title = pageUrl;
@@ -239,6 +254,8 @@
     list.forEach(function (f) {
       var div = document.createElement('div');
       div.className = 'flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2.5 sm:py-3 hover:bg-slate-800/60 transition flex-wrap' + (selected[f.name] ? ' bg-slate-800/40' : '');
+      div.dataset.name = f.name;
+      if (highlightNames[f.name]) div.classList.add('file-new-flash');
       div.innerHTML =
         '<label class="flex items-center shrink-0 cursor-pointer"><input type="checkbox" class="file-check accent-emerald-500 w-3.5 h-3.5" data-name="' + escapeHtml(f.name) + '"' + (selected[f.name] ? ' checked' : '') + '></label>' +
         '<span class="text-xl sm:text-2xl shrink-0">' + fileIcon(f.name) + '</span>' +
@@ -252,6 +269,35 @@
       Array.prototype.forEach.call(div.querySelectorAll('button'), function (b) { b.dataset.name = f.name; });
       wrap.appendChild(div);
     });
+
+    // 上传后定位并高亮新出现的文件
+    if (pendingHighlight.length) {
+      var names = pendingHighlight;
+      pendingHighlight = [];
+      var found = names.filter(function (n) { return list.some(function (f) { return f.name === n; }); });
+      if (found.length) {
+        found.forEach(function (n) { highlightNames[n] = true; });
+        // 直接给已渲染的行加上高亮样式，并滚动定位到第一个
+        var rows = wrap.querySelectorAll(':scope > div');
+        var target = null;
+        for (var i = 0; i < rows.length; i++) {
+          if (found.indexOf(rows[i].dataset.name) >= 0) {
+            rows[i].classList.add('file-new-flash');
+            if (!target) target = rows[i];
+          }
+        }
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        // 3 秒后淡出高亮
+        setTimeout(function () {
+          Object.keys(highlightNames).forEach(function (n) { delete highlightNames[n]; });
+          wrap.querySelectorAll(':scope > div.file-new-flash').forEach(function (el) {
+            el.classList.remove('file-new-flash');
+          });
+        }, 3000);
+      }
+    }
   }
 
   function uploadFiles(fileList) {
@@ -275,15 +321,47 @@
   var uploadTotal = 0; // 本批次总数
   var listReloadTimer = null;
 
-  /**
-   * 延迟刷新列表，避免每个文件上传完都请求一次
-   */
+  /** 延迟刷新列表，避免每个文件上传完都请求一次 */
   function scheduleListReload() {
     if (listReloadTimer) return;
     listReloadTimer = setTimeout(function () {
       listReloadTimer = null;
       loadFiles();
     }, 600);
+  }
+
+  /**
+   * 等待新文件出现在列表中，然后定位高亮。
+   *
+   * 服务端写入后需要重新扫描目录，列表可能慢一步到达；
+   * 这里反复刷新列表直到新文件出现，再触发一次渲染让高亮生效。
+   * 多个文件同时上传时统一累积到同一队列，避免互相干扰。
+   */
+  function waitForHighlight(names) {
+    names.forEach(function (n) {
+      if (highlightQueue.indexOf(n) < 0) highlightQueue.push(n);
+    });
+    if (highlightTimer) return;
+    highlightTimer = setTimeout(tryHighlight, 250);
+  }
+
+  function tryHighlight() {
+    highlightTimer = null;
+    if (!highlightQueue.length) return;
+    loadFiles().then(function () {
+      var found = highlightQueue.filter(function (n) {
+        return fileItems.some(function (f) { return f.name === n; });
+      });
+      if (!found.length) {
+        // 文件还没出现在列表中，稍后再试
+        highlightTimer = setTimeout(tryHighlight, 300);
+        return;
+      }
+      // 找到后加入待高亮集合，再次渲染让高亮样式生效
+      pendingHighlight = pendingHighlight.concat(found);
+      highlightQueue = highlightQueue.filter(function (n) { return found.indexOf(n) < 0; });
+      loadFiles();
+    });
   }
 
   function updateQueueSummary() {
@@ -396,7 +474,13 @@
       var json = null;
       try { json = JSON.parse(xhr.responseText); } catch (e) { json = null; }
       if (xhr.status === 200 && json && json.code === 0) {
-        toast('上传完成：' + file.name, 'ok');
+        // 服务端可能在同名时追加 _1 后缀，以返回的实际文件名为准
+        var results = (json.data && json.data.results) || [];
+        var saved = results.length ? results[0].name : file.name;
+        var renamed = saved !== file.name;
+        toast(renamed ? '上传完成：' + file.name + ' → ' + saved + '（同名已自动改名）' : '上传完成：' + file.name, 'ok');
+        // 等待新文件出现在列表中，然后定位高亮
+        waitForHighlight([saved]);
         finish(true);
         return;
       }
