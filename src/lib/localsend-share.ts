@@ -5,6 +5,64 @@
  * 令牌只存在内存中，服务重启即失效；到期自动失效。
  */
 import { randomBytes } from 'node:crypto';
+import { extname } from 'node:path';
+
+/**
+ * 可以直接在浏览器里打开的文本类型。
+ *
+ * html / svg 刻意不在其中：内联返回会让对方页面里的脚本
+ * 以本站源执行（同源 XSS），文件仍走下载。
+ */
+const INLINE_TEXT_EXT = new Set([
+  'txt',
+  'md',
+  'markdown',
+  'json',
+  'log',
+  'csv',
+  'tsv',
+  'js',
+  'ts',
+  'css',
+  'xml',
+  'yml',
+  'yaml',
+  'ini',
+  'conf',
+  'env',
+  'sh',
+  'py',
+  'go',
+  'rs',
+  'sql',
+  'toml',
+]);
+
+/** 可以直接内联显示的图片类型 */
+const INLINE_IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif']);
+
+/** 判断分享的文件能否内联打开 */
+export function shareInlineType(rel: string): 'text' | 'image' | null {
+  const ext = extname(rel).slice(1).toLowerCase();
+  if (INLINE_TEXT_EXT.has(ext)) return 'text';
+  if (INLINE_IMAGE_EXT.has(ext)) return 'image';
+  return null;
+}
+
+/** 内联打开时使用的 Content-Type */
+export function shareInlineMime(rel: string): string {
+  const ext = extname(rel).slice(1).toLowerCase();
+  const map: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    bmp: 'image/bmp',
+    avif: 'image/avif',
+  };
+  return map[ext] ?? 'text/plain; charset=utf-8';
+}
 
 export interface ShareEntry {
   /** 分享的相对路径列表，单个文件直接下载，多个文件打成 zip */

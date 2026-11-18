@@ -14,7 +14,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { color } from 'console-log-colors';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
@@ -26,9 +26,10 @@ import { createChunkStore, MAX_CHUNK_SIZE } from './lib/localsend-chunk';
 import { createCleaner } from './lib/localsend-cleaner';
 import { createGuard } from './lib/localsend-guard';
 import { batchRename, moveFiles, parseRenameRule, renameFile, uniqueName } from './lib/localsend-manage';
+import { buildPasteName, contentHash, parsePaste, parseStrategy, timeStampTag } from './lib/localsend-paste';
 import { resolveInDir, safeRelPath } from './lib/localsend-path';
 import { collectDirs, collectExts, filterEntries, paginate, parseListQuery, ROOT_DIR, sortEntries } from './lib/localsend-query';
-import { createShareStore } from './lib/localsend-share';
+import { createShareStore, shareInlineMime, shareInlineType } from './lib/localsend-share';
 import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
 import { createTrash } from './lib/localsend-trash';
 import { createWebDavHandler } from './lib/localsend-webdav';
@@ -227,7 +228,17 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     if (!files.length) return void res.status(404).json({ code: 1, msg: '分享的文件已不存在' });
 
     if (files.length === 1) {
-      res.download(files[0].path, basename(files[0].rel), { dotfiles: 'allow' });
+      const file = files[0];
+      // 文本与图片直接在浏览器里打开，扫一眼就能看到内容，不必先下载
+      // 需要强制下载时加 ?dl=1
+      const inline = req.query.dl === undefined ? shareInlineType(file.rel) : false;
+      if (inline) {
+        res.setHeader('Content-Type', shareInlineMime(file.rel));
+        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(basename(file.rel))}`);
+        createReadStream(file.path).pipe(res);
+        return;
+      }
+      res.download(file.path, basename(file.rel), { dotfiles: 'allow' });
       return;
     }
     const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
@@ -245,6 +256,71 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       logger.error('[localsend share]', err);
       res.end();
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 剪贴板内容落盘
+  //
+  // 分享只能分享「已经存在于存储目录里的文件」，
+  // 这里把纯文本与截图直接写成普通文件，
+  // 让「粘贴即分享」成为可能，同时继承列表、回收站、WebDAV 等全部能力。
+  // ---------------------------------------------------------------------------
+  app.post('/localsend/api/paste', express.json({ limit: '16mb' }), (req: Request, res: Response) => {
+    const parsed = parsePaste(req.body);
+    if (parsed.error) return void res.status(400).json({ code: 1, msg: parsed.error });
+
+    // 单个文件的体积限制，与上传保持一致
+    if (maxSize && parsed.buffer.length > maxSize) {
+      return void res.status(413).json({ code: 1, msg: `内容超出大小限制（${(maxSize / 1024 / 1024).toFixed(0)}MB）` });
+    }
+    // 总容量预检
+    if (maxTotalSize) {
+      const used = dirSize(dir);
+      if (used + parsed.buffer.length > maxTotalSize) {
+        return void res.status(413).json({
+          code: 1,
+          msg: `存储空间不足：已用 ${(used / 1024 / 1024).toFixed(1)}MB / ${(maxTotalSize / 1024 / 1024).toFixed(1)}MB`,
+        });
+      }
+    }
+
+    const hash = contentHash(parsed.buffer);
+    const strategy = parseStrategy(req.body?.strategy);
+    const fileName = buildPasteName(
+      { kind: parsed.kind, hash, stamp: timeStampTag(), name: String(req.body?.name ?? ''), strategy },
+      parsed.ext,
+    );
+    // 目标目录：只允许落在存储目录内
+    const rawDir = String(req.body?.dir ?? '').trim();
+    const subDir = rawDir ? safeRelPath(rawDir) : '';
+    if (rawDir && !subDir) return void res.status(400).json({ code: 1, msg: '非法的目标目录' });
+    const rel = subDir ? `${subDir}/${fileName}` : fileName;
+    const target = resolveInDir(dir, rel);
+    if (!target) return void res.status(400).json({ code: 1, msg: '非法的文件路径' });
+
+    // 同名且内容一致时直接复用，避免粘贴同一段内容产生一堆重复文件
+    if (existsSync(target) && statSync(target).isFile()) {
+      try {
+        if (contentHash(readFileSync(target)) === hash) {
+          return void res.json({ code: 0, data: { name: rel, size: parsed.buffer.length, hash, reused: true } });
+        }
+      } catch {
+        // 读取失败时按新文件处理
+      }
+    }
+
+    // 同名但内容不同：追加 _1 后缀
+    const finalRel = uniqueName(dir, rel);
+    const finalAbs = resolveInDir(dir, finalRel);
+    if (!finalAbs) return void res.status(400).json({ code: 1, msg: '非法的文件路径' });
+    try {
+      if (!existsSync(dirname(finalAbs))) mkdirSync(dirname(finalAbs), { recursive: true });
+      writeFileSync(finalAbs, parsed.buffer);
+    } catch (err) {
+      logger.error('[localsend paste]', err);
+      return void res.status(500).json({ code: 1, msg: '内容保存失败' });
+    }
+    res.json({ code: 0, data: { name: finalRel, size: parsed.buffer.length, hash, reused: false } });
   });
 
   // 创建分享链接
