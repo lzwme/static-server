@@ -63,6 +63,10 @@
     <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
       <h2 class="font-semibold text-base sm:text-lg">文件列表 <span id="fileCount" class="text-xs sm:text-sm text-slate-400 font-normal"></span></h2>
       <div class="flex gap-2 text-xs sm:text-sm items-center flex-wrap">
+        <button id="trashBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 hover:bg-slate-700 transition" title="回收站">
+          <span class="sm:hidden">🗑</span><span class="hidden sm:inline">🗑 回收站</span>
+          <span id="trashCount" class="hidden ml-1 text-amber-400 font-mono"></span>
+        </button>
         <div class="relative">
           <input id="searchInput" type="search" placeholder="搜索文件名…" autocomplete="off"
             class="bg-slate-800 border border-slate-700 rounded-lg pl-7 pr-2.5 sm:pr-3 py-1.5 outline-none focus:border-emerald-500/60 placeholder:text-slate-500 w-32 sm:w-44" />
@@ -120,6 +124,21 @@
       <button id="closePreview" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1 transition shrink-0">关闭</button>
     </div>
     <pre id="previewContent" class="whitespace-pre-wrap break-all text-xs font-mono bg-slate-950 border border-slate-800 rounded-xl p-4 overflow-auto flex-1 text-slate-300"></pre>
+  </div>
+</div>
+
+<!-- 回收站弹窗 -->
+<div id="trashModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 max-w-2xl w-full max-h-[80vh] flex flex-col gap-3">
+    <div class="flex items-center justify-between gap-3">
+      <div class="text-sm font-medium">回收站 <span id="trashModalCount" class="text-xs text-slate-400 font-normal"></span></div>
+      <div class="flex items-center gap-2">
+        <button id="trashEmpty" class="text-[11px] text-slate-400 hover:text-red-400 px-2 py-1 rounded border border-slate-700 hover:border-red-500/40 transition">清空</button>
+        <button id="closeTrash" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1 transition">关闭</button>
+      </div>
+    </div>
+    <p class="text-[11px] text-slate-500">删除的文件会先放入回收站，保留期内可还原；过期后自动清理。</p>
+    <div id="trashList" class="overflow-auto flex-1 divide-y divide-slate-800 border border-slate-800 rounded-xl"></div>
   </div>
 </div>
 
@@ -202,13 +221,24 @@
   function escapeHtml(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
-  function toast(msg, type) {
+  function toast(msg, type, action) {
     var el = $('toast');
-    el.textContent = msg;
-    el.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] rounded-xl px-4 sm:px-5 py-2.5 sm:py-3 text-xs sm:text-sm shadow-xl border border-white/10 ' + (type === 'ok' ? 'bg-emerald-600/90' : type === 'err' ? 'bg-red-600/90' : 'bg-slate-800/90');
+    el.textContent = '';
+    el.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] rounded-xl px-4 sm:px-5 py-2.5 sm:py-3 text-xs sm:text-sm shadow-xl border border-white/10 flex items-center gap-3 ' + (type === 'ok' ? 'bg-emerald-600/90' : type === 'err' ? 'bg-red-600/90' : 'bg-slate-800/90');
+    el.appendChild(document.createTextNode(msg));
+    if (action) {
+      var btn = document.createElement('button');
+      btn.className = 'px-2 py-0.5 rounded border border-white/30 hover:bg-white/15 shrink-0 font-medium';
+      btn.textContent = action.label;
+      btn.addEventListener('click', function () {
+        el.classList.add('hidden');
+        action.onClick();
+      });
+      el.appendChild(btn);
+    }
     el.classList.remove('hidden');
     clearTimeout(el._t);
-    el._t = setTimeout(function () { el.classList.add('hidden'); }, 2600);
+    el._t = setTimeout(function () { el.classList.add('hidden'); }, action ? 6000 : 2600);
   }
   function copyText(text) {
     var done = function () { toast('已复制到剪贴板', 'ok'); };
@@ -916,14 +946,117 @@
   }
 
   function deleteFile(name) {
-    if (!window.confirm('确定删除文件：' + name + ' ？')) return;
+    if (!window.confirm('确定删除文件：' + name + ' ？（删除后可在回收站还原）')) return;
     fetch(withKey(API + '/delete/' + encodeURIComponent(name)), { method: 'DELETE' })
       .then(function (r) { return r.json(); })
       .then(function (json) {
-        if (json.code === 0) { toast('已删除：' + name, 'ok'); loadFiles(); }
-        else { toast(json.msg || '删除失败', 'err'); }
+        if (json.code !== 0) { toast(json.msg || '删除失败', 'err'); return; }
+        loadFiles();
+        refreshTrashCount();
+        // 提供撤销入口，误删可立即还原
+        var entryId = json.data && json.data.id;
+        if (entryId) {
+          toast('已删除：' + name, 'ok', {
+            label: '撤销',
+            onClick: function () {
+              restoreTrashEntry(entryId, function (ok, msg) {
+                if (ok) toast('已还原：' + msg, 'ok');
+                else toast(msg || '还原失败', 'err');
+              });
+            },
+          });
+        } else {
+          toast('已删除：' + name, 'ok');
+        }
       })
       .catch(function () { toast('删除失败', 'err'); });
+  }
+
+  /** 还原回收站中的某个条目 */
+  function restoreTrashEntry(id, cb) {
+    fetch(withKey(API + '/trash/' + encodeURIComponent(id) + '/restore'), { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) { if (cb) cb(false, json.msg || '还原失败'); return; }
+        loadFiles();
+        refreshTrashCount();
+        if (cb) cb(true, json.data.name);
+      })
+      .catch(function () { if (cb) cb(false, '还原失败'); });
+  }
+
+  /** 刷新回收站条目数量 */
+  function refreshTrashCount() {
+    fetch(withKey(API + '/trash'))
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        var n = (json.data || []).length;
+        var el = $('trashCount');
+        if (n > 0) {
+          el.textContent = n;
+          el.classList.remove('hidden');
+        } else {
+          el.classList.add('hidden');
+        }
+      })
+      .catch(function () { /* 忽略计数刷新失败 */ });
+  }
+
+  /** 打开回收站面板 */
+  function openTrash() {
+    $('trashModal').classList.remove('hidden');
+    loadTrashList();
+  }
+
+  function loadTrashList() {
+    var wrap = $('trashList');
+    wrap.innerHTML = '<div class="text-xs text-slate-500 p-4 text-center">加载中…</div>';
+    fetch(withKey(API + '/trash'))
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        var list = json.data || [];
+        $('trashModalCount').textContent = '(' + list.length + ')';
+        wrap.innerHTML = '';
+        if (!list.length) {
+          wrap.innerHTML = '<div class="text-xs text-slate-500 p-6 text-center">回收站是空的</div>';
+          return;
+        }
+        list.forEach(function (item) {
+          var div = document.createElement('div');
+          div.className = 'flex items-center gap-3 px-3 py-2.5';
+          div.innerHTML =
+            '<span class="text-lg shrink-0">🗑</span>' +
+            '<div class="min-w-0 flex-1">' +
+              '<div class="text-xs truncate text-slate-200" title="' + escapeHtml(item.name) + '">' + escapeHtml(item.name) + '</div>' +
+              '<div class="text-[10px] text-slate-500 mt-0.5">' + fmtSize(item.size || 0) + ' · 删除于 ' + fmtTime(item.deletedAt) + '</div>' +
+            '</div>' +
+            '<button data-act="restore" class="px-2 py-1 rounded text-xs text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 transition shrink-0">还原</button>' +
+            '<button data-act="purge" class="px-2 py-1 rounded text-xs text-red-400 hover:bg-red-500/10 border border-red-500/30 transition shrink-0">彻底删除</button>';
+          var restoreBtn = div.querySelector('[data-act="restore"]');
+          var purgeBtn = div.querySelector('[data-act="purge"]');
+          restoreBtn.addEventListener('click', function () {
+            restoreTrashEntry(item.id, function (ok, msg) {
+              if (ok) { toast('已还原：' + msg, 'ok'); loadTrashList(); }
+              else toast(msg || '还原失败', 'err');
+            });
+          });
+          purgeBtn.addEventListener('click', function () {
+            fetch(withKey(API + '/trash/' + encodeURIComponent(item.id)), { method: 'DELETE' })
+              .then(function (r) { return r.json(); })
+              .then(function (j) {
+                if (j.code !== 0) { toast(j.msg || '删除失败', 'err'); return; }
+                toast('已彻底删除：' + item.name, 'ok');
+                loadTrashList();
+                refreshTrashCount();
+              })
+              .catch(function () { toast('删除失败', 'err'); });
+          });
+          wrap.appendChild(div);
+        });
+      })
+      .catch(function () {
+        wrap.innerHTML = '<div class="text-xs text-red-400 p-4 text-center">回收站加载失败</div>';
+      });
   }
 
   // 事件绑定
@@ -983,6 +1116,22 @@
   $('qrModal').addEventListener('click', function (e) { if (e.target === $('qrModal')) $('qrModal').classList.add('hidden'); });
   $('closePreview').addEventListener('click', function () { $('previewModal').classList.add('hidden'); });
   $('previewModal').addEventListener('click', function (e) { if (e.target === $('previewModal')) $('previewModal').classList.add('hidden'); });
+  // 回收站
+  $('trashBtn').addEventListener('click', openTrash);
+  $('closeTrash').addEventListener('click', function () { $('trashModal').classList.add('hidden'); });
+  $('trashModal').addEventListener('click', function (e) { if (e.target === $('trashModal')) $('trashModal').classList.add('hidden'); });
+  $('trashEmpty').addEventListener('click', function () {
+    if (!window.confirm('确定清空回收站？其中的文件将无法还原。')) return;
+    fetch(withKey(API + '/trash'), { method: 'DELETE' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.code !== 0) { toast(j.msg || '清空失败', 'err'); return; }
+        toast('已清空回收站（' + j.data.removed + ' 项）', 'ok');
+        loadTrashList();
+        refreshTrashCount();
+      })
+      .catch(function () { toast('清空失败', 'err'); });
+  });
   $('fileList').addEventListener('click', function (e) {
     var btnEl = e.target.closest('button[data-act]');
     if (!btnEl) return;
@@ -1032,32 +1181,72 @@
   $('batchDelete').addEventListener('click', function () {
     var names = Object.keys(selected).filter(function (n) { return selected[n]; });
     if (!names.length) return;
-    if (!window.confirm('确定删除选中的 ' + names.length + ' 个文件？此操作不可撤销。')) return;
+    if (!window.confirm('确定删除选中的 ' + names.length + ' 个文件？删除后可在回收站还原。')) return;
     toast('正在删除 ' + names.length + ' 个文件');
     var total = names.length;
     var done = 0;
     var failed = 0;
+    // 记录成功删除的条目 ID，供撤销使用
+    var trashIds = [];
     function next() {
       if (done >= total) {
-        if (failed) toast('已完成 ' + (total - failed) + '/' + total + '，' + failed + ' 个失败', 'err');
-        else toast('已删除 ' + total + ' 个文件', 'ok');
         selected = {};
         loadFiles();
+        refreshTrashCount();
+        if (failed) {
+          toast('已完成 ' + (total - failed) + '/' + total + '，' + failed + ' 个失败', 'err');
+        } else if (trashIds.length) {
+          toast('已删除 ' + total + ' 个文件', 'ok', {
+            label: '撤销',
+            onClick: function () { restoreAll(trashIds); },
+          });
+        } else {
+          toast('已删除 ' + total + ' 个文件', 'ok');
+        }
         return;
       }
       fetch(withKey(API + '/delete/' + encodeURIComponent(names[done])), { method: 'DELETE' })
         .then(function (r) { return r.json(); })
-        .then(function (j) { if (j.code !== 0) failed++; done++; next(); })
+        .then(function (j) {
+          if (j.code !== 0) failed++;
+          else if (j.data && j.data.id) trashIds.push(j.data.id);
+          done++;
+          next();
+        })
         .catch(function () { failed++; done++; next(); });
     }
     next();
   });
+
+  /** 依次还原多个回收站条目 */
+  function restoreAll(ids) {
+    if (!ids || !ids.length) return;
+    var i = 0;
+    var ok = 0;
+    var failed = 0;
+    function next() {
+      if (i >= ids.length) {
+        loadFiles();
+        refreshTrashCount();
+        if (failed) toast('已还原 ' + ok + '/' + ids.length + '，' + failed + ' 个失败', 'err');
+        else toast('已还原 ' + ok + ' 个文件', 'ok');
+        return;
+      }
+      restoreTrashEntry(ids[i], function (success) {
+        if (success) ok++; else failed++;
+        i++;
+        next();
+      });
+    }
+    next();
+  }
 
   // 恢复上次选择的排序方式与升降序
   $('sortSelect').value = sortType;
   $('orderBtn').textContent = sortOrder === 'desc' ? '↓ 降序' : '↑ 升序';
 
   loadFiles();
+  refreshTrashCount();
 })();
 </script>
 </body>
