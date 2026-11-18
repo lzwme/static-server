@@ -1,0 +1,54 @@
+# 持续集成：代码检查、类型检查、构建与自动化测试
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: 检查 / 构建 / 测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        name: 安装 pnpm
+        with:
+          version: 9
+          run_install: false
+
+      - name: 缓存 pnpm
+        uses: actions/cache@v4
+        with:
+          path: ~/.pnpm-store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: 安装依赖
+        run: pnpm install --no-frozen-lockfile --ignore-scripts
+
+      - name: 代码检查
+        run: pnpm run lint
+
+      - name: 类型检查
+        run: pnpm run typecheck
+
+      - name: 构建
+        run: pnpm run build
+
+      - name: 自动化测试
+        run: node --test --test-timeout=60000 test/
