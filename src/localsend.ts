@@ -176,13 +176,18 @@ export function dirSize(target: string): number {
   return total;
 }
 
-export async function initLocalsend(app: Express): Promise<void> {
+export interface LocalsendHandle {
+  /** 停止目录监听与后台定时任务（进程退出、测试收尾时调用） */
+  stop: () => void;
+}
+
+export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   const config = await getConfig();
   const raw = config.localsend;
-  if (!raw) return;
+  if (!raw) return { stop: () => {} };
 
   const ls = typeof raw === 'boolean' ? { enabled: raw } : raw;
-  if (!ls.enabled) return;
+  if (!ls.enabled) return { stop: () => {} };
 
   const dir = ls.dir || '';
   const maxSize = ls.maxSize || 1024 * 1024 * 1024;
@@ -828,4 +833,23 @@ export async function initLocalsend(app: Express): Promise<void> {
     logger.error('[localsend]', err);
     res.status(status).json({ code: 1, msg });
   });
+
+  return {
+    stop: () => {
+      // 断开所有事件推送连接
+      for (const client of eventClients) {
+        try {
+          client.end();
+        } catch {
+          // 忽略关闭失败
+        }
+      }
+      eventClients.clear();
+      // 停止目录监听与后台定时任务，否则进程无法退出
+      listCache.stop();
+      trash.stop();
+      shareStore.stop();
+      chunkStore.stop();
+    },
+  };
 }

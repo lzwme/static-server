@@ -28,6 +28,8 @@ export interface ShareStore {
   revoke: (token: string) => boolean;
   /** 清理过期分享 */
   cleanup: () => number;
+  /** 停止定时清理（进程退出或测试收尾时调用） */
+  stop: () => void;
 }
 
 export function createShareStore(): ShareStore {
@@ -76,5 +78,8 @@ export function createShareStore(): ShareStore {
       return shares.delete(token);
     },
     cleanup,
+    stop() {
+      clearInterval(timer);
+    },
   };
 }

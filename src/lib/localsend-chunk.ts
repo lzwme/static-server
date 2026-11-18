@@ -206,7 +206,7 @@ export function createChunkStore(options: ChunkStoreOptions) {
     },
 
     /** 查询上传进度 */
-    status(uploadId: string): ChunkInitResult | null {
+    status(uploadId: string): (ChunkInitResult & { complete: boolean }) | null {
       const meta = metas.get(uploadId);
       if (!meta) return null;
       // 以磁盘实际状态为准，避免进程重启后状态与文件不一致
@@ -218,6 +218,7 @@ export function createChunkStore(options: ChunkStoreOptions) {
         chunkSize: meta.chunkSize,
         total: meta.total,
         received,
+        complete: received.length >= meta.total,
       };
     },
 
@@ -328,6 +329,12 @@ export function createChunkStore(options: ChunkStoreOptions) {
     clampChunkSize(size?: number): number {
       const n = Number(size) || DEFAULT_CHUNK_SIZE;
       return Math.min(Math.max(n, MIN_CHUNK_SIZE), MAX_CHUNK_SIZE);
+    },
+
+    /** 停止定时清理（进程退出或测试收尾时调用） */
+    stop(): void {
+      clearInterval(timer);
+      metas.clear();
     },
     /** 内部：分片总数上限 */
     maxChunks: MAX_CHUNKS,

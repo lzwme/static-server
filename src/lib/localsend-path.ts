@@ -118,11 +118,13 @@ export function listFiles(baseDir: string, filter?: (relPath: string) => boolean
   return entries;
 }
 
-/** 目录下的直接子目录（相对路径） */
+/** 目录下的直接子目录（相对路径），不含内部目录 */
 export function listDirs(baseDir: string): string[] {
   if (!existsSync(baseDir)) return [];
   const dirs: string[] = [];
   for (const name of readdirSync(baseDir)) {
+    // 内部目录（如分片暂存区、回收站）不对外暴露
+    if (isInternalDirName(name)) continue;
     try {
       if (statSync(join(baseDir, name)).isDirectory()) dirs.push(name);
     } catch {
