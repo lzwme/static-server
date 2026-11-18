@@ -60,6 +60,9 @@
         <button id="watchDirBtn" class="px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 hover:border-emerald-500/40 transition text-xs sm:text-sm text-slate-300 shrink-0" title="选择一个本地目录，目录里新增的文件会自动上传">
           📡 监听目录
         </button>
+        <button id="pasteBtn" class="px-2.5 sm:px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 transition text-xs sm:text-sm text-emerald-300 shrink-0" title="粘贴文本或截图，生成分享链接（页面任意处 Ctrl+V 也可）">
+          📋 粘贴内容
+        </button>
         <span id="watchStatus" class="hidden text-[11px] sm:text-xs text-emerald-400 items-center gap-1.5"></span>
         <span class="text-[11px] sm:text-xs text-slate-500 hidden sm:inline">保留原有目录结构</span>
         <input id="dirInput" type="file" webkitdirectory directory multiple />
@@ -90,6 +93,10 @@
         <button id="trashBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 hover:bg-slate-700 transition" title="回收站">
           <span class="sm:hidden">🗑</span><span class="hidden sm:inline">🗑 回收站</span>
           <span id="trashCount" class="hidden ml-1 text-amber-400 font-mono"></span>
+        </button>
+        <button id="shareManageBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 hover:bg-slate-700 transition" title="查看与撤销分享链接">
+          <span class="sm:hidden">🔗</span><span class="hidden sm:inline">🔗 分享管理</span>
+          <span id="shareCount" class="hidden ml-1 text-emerald-400 font-mono"></span>
         </button>
         <div class="relative">
           <input id="searchInput" type="search" placeholder="搜索文件名…" autocomplete="off"
@@ -242,6 +249,49 @@
     <div class="flex justify-end gap-2">
       <button id="batchRenameCancel" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1.5 transition">取消</button>
       <button id="batchRenameOk" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-medium rounded-lg px-4 py-1.5 transition">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 粘贴内容分享弹窗 -->
+<div id="textModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-lg flex flex-col gap-3">
+    <div class="text-sm font-medium">粘贴内容并分享</div>
+    <textarea id="textInput" rows="6" spellcheck="false" placeholder="粘贴或输入要分享的文本；直接粘贴截图会作为图片分享"
+      class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-emerald-500/60 resize-y font-mono"></textarea>
+    <div class="flex items-center gap-2 flex-wrap">
+      <select id="pasteStrategy" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs outline-none cursor-pointer" title="文件名生成方式">
+        <option value="hash">按内容哈希命名</option>
+        <option value="timestamp">按时间戳命名</option>
+        <option value="custom">自定义文件名</option>
+      </select>
+      <input id="pasteName" type="text" placeholder="自定义文件名" autocomplete="off" spellcheck="false"
+        class="hidden bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs outline-none focus:border-emerald-500/60 flex-1 min-w-[110px]" />
+      <input id="pasteDir" type="text" placeholder="存放目录（可选）" autocomplete="off" spellcheck="false"
+        class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs outline-none focus:border-emerald-500/60 flex-1 min-w-[110px]" />
+      <button id="clipboardReadBtn" class="px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 transition text-xs text-slate-300 shrink-0" title="从系统剪贴板读取内容">
+        📥 读取剪贴板
+      </button>
+    </div>
+    <p class="text-[11px] text-slate-500">内容会存成本机文件后再生成链接，收到链接的人无需访问令牌即可查看。</p>
+    <div class="flex justify-end gap-2">
+      <button id="textCancel" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1.5 transition">取消</button>
+      <button id="textOk" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-medium rounded-lg px-4 py-1.5 transition">生成分享链接</button>
+    </div>
+  </div>
+</div>
+
+<!-- 分享管理弹窗 -->
+<div id="shareModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-lg flex flex-col gap-3">
+    <div class="flex items-center justify-between gap-3">
+      <div class="text-sm font-medium">分享管理</div>
+      <button id="shareRefresh" class="text-[11px] text-slate-400 hover:text-emerald-400 px-2 py-1 rounded border border-slate-700 hover:border-emerald-500/40 transition">刷新</button>
+    </div>
+    <p class="text-[11px] text-slate-500">分享链接无需访问令牌即可访问，默认 24 小时后失效。</p>
+    <div id="shareList" class="max-h-72 overflow-auto divide-y divide-slate-800 border border-slate-800 rounded-xl"></div>
+    <div class="flex justify-end">
+      <button id="shareClose" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1.5 transition">关闭</button>
     </div>
   </div>
 </div>

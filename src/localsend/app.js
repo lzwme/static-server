@@ -125,17 +125,21 @@
   }
   function copyText(text) {
     var done = function () { toast('已复制到剪贴板', 'ok'); };
+    // 降级方案：部分环境（如页面未聚焦）不允许直接写剪贴板，改用临时文本域
+    var fallback = function () {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { toast('复制失败', 'err'); }
+      document.body.removeChild(ta);
+    };
     if (navigator.clipboard && window.isSecureContext) {
-      return navigator.clipboard.writeText(text).then(done).catch(function () { toast('复制失败', 'err'); });
+      return navigator.clipboard.writeText(text).then(done).catch(fallback);
     }
-    var ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand('copy'); done(); } catch (e) { toast('复制失败', 'err'); }
-    document.body.removeChild(ta);
+    return fallback();
   }
 
   var iconMap = {
@@ -1665,7 +1669,7 @@
     copyText(withKey(location.origin + API + '/download/' + encodeURIComponent(name)));
   }
   // 生成分享链接（带时效，无需访问令牌即可下载）
-  function shareFiles(names) {
+  function shareFiles(names, label) {
     if (!names || !names.length) return;
     fetch(withKey(API + '/share'), {
       method: 'POST',
@@ -1677,11 +1681,196 @@
         if (json.code !== 0) { toast(json.msg || '分享失败', 'err'); return; }
         var url = location.origin + json.data.url;
         copyText(url);
-        var label = json.data.names.length > 1 ? json.data.names.length + ' 个文件' : json.data.names[0];
-        toast('分享链接已复制（' + label + '，24 小时内有效）', 'ok');
+        var tip = label || (json.data.names.length > 1 ? json.data.names.length + ' 个文件' : json.data.names[0]);
+        toast('分享链接已复制（' + tip + '，24 小时内有效）', 'ok');
+        refreshShareCount();
       })
       .catch(function () { toast('分享失败', 'err'); });
   }
+
+  // ---------------------------------------------------------------------------
+  // 剪贴板分享
+  //
+  // 分享原本只能分享「已经存在于存储目录里的文件」，
+  // 想分享一段文字或一张截图得先手动存成文件。
+  // 这里把剪贴板内容直接落盘成普通文件，再复用现成的分享接口生成链接。
+  // ---------------------------------------------------------------------------
+
+  /** 打开文本分享弹窗（可带初始文本） */
+  function openTextModal(text) {
+    $('textInput').value = text || '';
+    $('textModal').classList.remove('hidden');
+    setTimeout(function () { $('textInput').focus(); }, 60);
+  }
+
+  /** 关闭文本分享弹窗 */
+  function closeTextModal() {
+    $('textModal').classList.add('hidden');
+  }
+
+  /**
+   * 把剪贴板内容落盘。
+   *
+   * kind 为 text 时 content 是文本本身，为 image 时是图片的 data URL。
+   */
+  function pasteToFile(payload, label) {
+    // 自己粘贴的内容不再触发「收到新文件」提示
+    suppressNotifyUntil = Date.now() + 2000;
+    fetch(withKey(API + '/paste'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) { toast(json.msg || '保存失败', 'err'); return; }
+        // 落盘后立刻生成分享链接，省去再选一次文件
+        var tip = label ? label + '（' + json.data.name + '）' : json.data.name;
+        if (json.data.reused) tip = '内容相同，已复用「' + json.data.name + '」';
+        shareFiles([json.data.name], tip);
+      })
+      .catch(function () { toast('保存失败', 'err'); });
+  }
+
+  /** 分享剪贴板里的图片（截图） */
+  function shareClipboardImage(file) {
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var dataUrl = String(reader.result || '');
+      if (!dataUrl) { toast('图片读取失败', 'err'); return; }
+      pasteToFile({ kind: 'image', content: dataUrl }, '截图');
+    };
+    reader.onerror = function () { toast('图片读取失败', 'err'); };
+    reader.readAsDataURL(file);
+  }
+
+  /** 从系统剪贴板读取内容（需要安全上下文与用户授权） */
+  function readClipboard() {
+    if (!navigator.clipboard || !navigator.clipboard.read) {
+      toast('当前环境无法直接读取剪贴板，请改用 Ctrl+V 粘贴', 'err');
+      return;
+    }
+    navigator.clipboard.read()
+      .then(function (items) {
+        // 优先取剪贴板里的图片
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].types.indexOf('image/png') >= 0) {
+            return items[i].getType('image/png').then(function (blob) {
+              shareClipboardImage(blob);
+            });
+          }
+        }
+        if (navigator.clipboard.readText) {
+          return navigator.clipboard.readText().then(function (text) {
+            if (text && text.trim()) openTextModal(text);
+            else toast('剪贴板是空的', 'err');
+          });
+        }
+        return null;
+      })
+      .catch(function () { toast('无法读取剪贴板，请改用 Ctrl+V 粘贴', 'err'); });
+  }
+
+  /** 提交文本分享 */
+  function submitTextShare() {
+    var content = $('textInput').value;
+    if (!content || !content.trim()) {
+      toast('请输入要分享的内容', 'err');
+      return;
+    }
+    var strategy = $('pasteStrategy').value;
+    var payload = { kind: 'text', content: content, strategy: strategy };
+    if (strategy === 'custom') {
+      var name = $('pasteName').value.trim();
+      if (!name) {
+        toast('请填写自定义文件名', 'err');
+        return;
+      }
+      payload.name = name;
+    }
+    var dir = $('pasteDir').value.trim();
+    if (dir) payload.dir = dir;
+    closeTextModal();
+    pasteToFile(payload, '文本');
+  }
+
+  // ---------------------------------------------------------------------------
+  // 分享管理
+  //
+  // 分享链接一旦发出去就很难收回，之前只能创建不能管理，
+  // 这里把已创建的链接列出来，支持复制、看二维码与撤销。
+  // ---------------------------------------------------------------------------
+
+  /** 刷新分享数量角标 */
+  function refreshShareCount() {
+    fetch(withKey(API + '/share'))
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) return;
+        var list = json.data || [];
+        $('shareCount').textContent = list.length;
+        $('shareCount').classList.toggle('hidden', list.length === 0);
+      })
+      .catch(function () { /* 角标失败不影响主流程 */ });
+  }
+
+  /** 打开分享管理弹窗 */
+  function openShareModal() {
+    $('shareModal').classList.remove('hidden');
+    loadShareList();
+  }
+
+  /** 拉取并渲染分享列表 */
+  function loadShareList() {
+    fetch(withKey(API + '/share'))
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) { toast(json.msg || '加载失败', 'err'); return; }
+        var list = json.data || [];
+        var wrap = $('shareList');
+        wrap.innerHTML = '';
+        if (!list.length) {
+          wrap.innerHTML = '<div class="px-3 py-8 text-center text-xs text-slate-500">还没有分享链接</div>';
+          return;
+        }
+        list.forEach(function (item) {
+          var url = location.origin + item.url;
+          var left = Math.max(0, Math.round((item.expiresAt - Date.now()) / 60000));
+          var expireText = left > 60 ? Math.round(left / 60) + ' 小时后' : left + ' 分钟后';
+          var row = document.createElement('div');
+          row.className = 'px-3 py-2 flex items-center gap-2 flex-wrap';
+          row.innerHTML =
+            '<div class="min-w-0 flex-1">' +
+              '<div class="text-xs text-slate-200 truncate" title="' + escapeHtml(item.names.join('、')) + '">' + escapeHtml(item.names.join('、')) + '</div>' +
+              '<div class="text-[11px] text-slate-500 mt-0.5">' + expireText + '失效 · 已访问 ' + item.hits + ' 次</div>' +
+            '</div>' +
+            '<div class="flex items-center gap-1 shrink-0">' +
+              '<button data-act="copy" class="px-2 py-1 rounded text-[11px] text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 transition">复制</button>' +
+              '<button data-act="qr" class="px-2 py-1 rounded text-[11px] text-slate-300 hover:bg-slate-700 border border-slate-600/60 transition">二维码</button>' +
+              '<button data-act="revoke" class="px-2 py-1 rounded text-[11px] text-red-400 hover:bg-red-500/10 border border-red-500/30 transition">撤销</button>' +
+            '</div>';
+          row.dataset.token = item.token;
+          row.dataset.url = url;
+          wrap.appendChild(row);
+        });
+      })
+      .catch(function () { toast('加载分享列表失败', 'err'); });
+  }
+
+  /** 撤销一个分享链接 */
+  function revokeShare(token) {
+    fetch(withKey(API + '/share/' + encodeURIComponent(token)), { method: 'DELETE' })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) { toast(json.msg || '撤销失败', 'err'); return; }
+        toast('分享链接已撤销', 'ok');
+        loadShareList();
+        refreshShareCount();
+      })
+      .catch(function () { toast('撤销失败', 'err'); });
+  }
+
   function showQr(text, label) {
     $('qrModal').classList.remove('hidden');
     $('modalText').textContent = label || text;
@@ -2037,6 +2226,77 @@
   $('batchRuleMode').addEventListener('change', renderRuleParams);
   $('batchRuleParams').addEventListener('input', updateRulePreview);
   $('batchRuleParams').addEventListener('change', updateRulePreview);
+
+  // 粘贴内容分享
+  $('pasteBtn').addEventListener('click', function () { openTextModal(''); });
+  $('textCancel').addEventListener('click', closeTextModal);
+  $('textOk').addEventListener('click', submitTextShare);
+  $('textModal').addEventListener('click', function (e) { if (e.target === $('textModal')) closeTextModal(); });
+  $('clipboardReadBtn').addEventListener('click', readClipboard);
+  // 选择自定义命名时才显示文件名输入框
+  $('pasteStrategy').addEventListener('change', function (e) {
+    $('pasteName').classList.toggle('hidden', e.target.value !== 'custom');
+  });
+  // 在文本框里粘贴图片时按图片分享，普通文本走默认粘贴行为
+  $('textInput').addEventListener('paste', function (e) {
+    var dt = e.clipboardData || e.dataTransfer;
+    if (!dt || !dt.items) return;
+    for (var i = 0; i < dt.items.length; i++) {
+      var item = dt.items[i];
+      if (item.kind === 'file' && item.type && item.type.indexOf('image/') === 0) {
+        var file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          closeTextModal();
+          shareClipboardImage(file);
+          return;
+        }
+      }
+    }
+  });
+
+  // 分享管理
+  $('shareManageBtn').addEventListener('click', openShareModal);
+  $('shareClose').addEventListener('click', function () { $('shareModal').classList.add('hidden'); });
+  $('shareModal').addEventListener('click', function (e) { if (e.target === $('shareModal')) $('shareModal').classList.add('hidden'); });
+  $('shareRefresh').addEventListener('click', loadShareList);
+  $('shareList').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    var row = btn.closest('div[data-token]');
+    if (!row) return;
+    if (btn.dataset.act === 'copy') copyText(row.dataset.url);
+    else if (btn.dataset.act === 'qr') showQr(row.dataset.url, '扫码打开分享：' + (row.dataset.url || ''));
+    else if (btn.dataset.act === 'revoke') revokeShare(row.dataset.token);
+  });
+
+  // 页面任意处直接粘贴（Ctrl+V）即可分享文本或截图
+  document.addEventListener('paste', function (e) {
+    var target = e.target;
+    // 在输入框 / 文本域里粘贴时保持默认行为
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+    var dt = e.clipboardData || e.dataTransfer;
+    if (!dt) return;
+    // 图片（截图）优先
+    if (dt.items && dt.items.length) {
+      for (var i = 0; i < dt.items.length; i++) {
+        var item = dt.items[i];
+        if (item.kind === 'file' && item.type && item.type.indexOf('image/') === 0) {
+          var file = item.getAsFile();
+          if (file) {
+            e.preventDefault();
+            shareClipboardImage(file);
+            return;
+          }
+        }
+      }
+    }
+    var text = dt.getData('text/plain');
+    if (text && text.trim()) {
+      e.preventDefault();
+      openTextModal(text);
+    }
+  });
   function closePreviewModal() {
     $('previewModal').classList.add('hidden');
     // 清空媒体内容，避免残留的音视频继续在后台播放
@@ -2203,6 +2463,7 @@
   loadFiles();
   loadFacets();
   refreshTrashCount();
+  refreshShareCount();
   updateInboxBadge();
   connectEvents();
 
