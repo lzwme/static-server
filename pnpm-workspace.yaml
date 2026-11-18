@@ -1,0 +1,4 @@
+# pnpm v10+ 的配置项统一存放于此（package.json 中的 pnpm 字段已不再被读取）
+# 允许执行构建脚本的依赖，避免 pnpm install 因 ERR_PNPM_IGNORED_BUILDS 中断
+allowBuilds:
+  '@parcel/watcher': true

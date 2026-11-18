@@ -1,9 +1,8 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { program } from 'commander';
 import { color } from 'console-log-colors';
-import { getConfig } from './config';
+import { CONFIG_FILE_NAME, getConfig, getUserConfigDir } from './config';
 import { logger } from './get-logger';
 import { repairLocalsendNames } from './localsend';
 import { initServer } from './static-server';
@@ -32,8 +31,9 @@ program
   .option('--localsend-dir <dir>', 'localsend 文件存储目录。默认 ~/.static-server/localsend，可用环境变量 SS_LOCALSEND_DIR 覆盖')
   .option('--debug', `开启调试模式。`, false)
   .action(async (opts) => {
-    if (opts.cert) opts.ssl.cert = opts.cert;
-    if (opts.key) opts.ssl.key = opts.key;
+    // opts.ssl 默认为 undefined，需先构造对象再赋值
+    if (opts.cert) opts.ssl = { ...opts.ssl, cert: opts.cert };
+    if (opts.key) opts.ssl = { ...opts.ssl, key: opts.key };
 
     if (opts.debug) {
       logger.updateOptions({ levelType: 'debug' });
@@ -57,8 +57,10 @@ program
 program
   .command('init [destination]')
   .description('初始化一个 ss.config.js 文件至指定的目录。默认为当前目录')
-  .action((destination = process.cwd()) => {
-    const confFile = resolve(destination, 'ss.config.js');
+  .option('-g, --global', '初始化到用户级配置目录 ~/.static-server，作为所有目录的兜底配置')
+  .action((destination: string | undefined, opts: { global?: boolean }) => {
+    const dir = opts.global ? getUserConfigDir() : destination || process.cwd();
+    const confFile = resolve(dir, CONFIG_FILE_NAME);
     if (existsSync(confFile)) {
       logger.warn('配置文件已存在，请确认：', color.cyanBright(confFile));
       return;
@@ -70,6 +72,7 @@ program
       return;
     }
 
+    mkdirSync(dir, { recursive: true });
     writeFileSync(confFile, readFileSync(tplFile));
     logger.info('已生成配置文件：', color.greenBright(confFile));
   });
@@ -81,7 +84,7 @@ program
   .action(async (opts) => {
     const config = await getConfig(false, opts.localsendDir ? { localsend: { enabled: true, dir: opts.localsendDir } } : {});
     const ls = typeof config.localsend === 'object' && config.localsend ? config.localsend : {};
-    const dir = opts.localsendDir || ls.dir || process.env.SS_LOCALSEND_DIR || resolve(homedir(), '.static-server/localsend');
+    const dir = opts.localsendDir || ls.dir || process.env.SS_LOCALSEND_DIR || resolve(getUserConfigDir(), 'localsend');
 
     const renamed = repairLocalsendNames(dir);
     if (!renamed.length) {

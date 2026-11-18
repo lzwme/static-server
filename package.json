@@ -40,7 +40,9 @@
     "watch": "tsc -w",
     "lint": "biome check",
     "fix": "biome check --fix",
-    "dev": "ts-node -T src/cli.ts",
+    "dev": "bun run src/cli.ts",
+    "dev:watch": "bun --watch src/cli.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "npm run clean && npm run build:assets && tsc && node scripts/copy-assets.js",
     "build:assets": "npm run build:css && npm run build:vendor",
     "build:css": "tailwindcss -i src/localsend/input.css -o src/localsend/style.css --minify",
@@ -71,7 +73,6 @@
     "qr-code-styling": "^1.9.2",
     "standard-version": "^9.5.0",
     "tailwindcss": "^4.3.5",
-    "ts-node": "^10.9.2",
     "typescript": "^7.0.2"
   }
 }

@@ -59,7 +59,35 @@ ss --localsend
 ```bash
 # 在当前目录初始化一个 ss.config.js 配置文件
 ss init
+
+# 在用户目录初始化一个 ss.config.js 配置文件（作为所有目录的兜底配置）
+ss init --global
 ```
+
+#### 配置文件的加载位置与优先级
+
+配置按以下顺序加载，**后者覆盖前者**（对象深合并，函数则整体覆盖）：
+
+| 优先级 | 位置 | 说明 |
+| --- | --- | --- |
+| 1（最低） | 内置默认值 | 见 `ss.config.sample.js` 中的注释 |
+| 2 | `~/.static-server/ss.config.js` | 用户级兜底配置，所有目录生效 |
+| 3 | `<当前目录>/ss.config.js` | 项目级配置，仅当前目录生效 |
+| 4（最高） | 命令行参数 | 如 `ss -p 8080` |
+
+```bash
+# 用户级配置目录：~/.static-server/
+#   ss.config.js   —— 用户级兜底配置
+#   localsend/     —— localsend 上传文件的存储目录
+```
+
+合并规则说明：
+
+- 普通对象（如 `ssl`、`headers`、`localsend`）按 key 深度合并，只写要改的字段即可。
+- `proxyConfig` 按 `api` 路径合并：同 `api` 的规则深度合并，后者覆盖前者；不同的 `api` 追加保留，因此用户级配置里的通用代理规则与项目级配置里的项目规则可以共存。
+- `custom` 是函数，只能整体覆盖：当前目录配置里定义了 `custom` 时，用户级配置里的 `custom` 不再执行。
+- 配置文件中的相对路径（如 `rootDir`）一律相对**当前工作目录**解析，用户级配置中建议使用绝对路径。
+- 配置文件加载失败（语法错误等）时会输出错误提示并忽略该文件，不会导致服务启动失败。
 
 配置文件内容示例：
 
@@ -135,12 +163,20 @@ git clone https://github.com/lzwme/static-server.git
 pnpm install
 pnpm build
 
-# dev
+# dev（使用 bun 直接运行 TypeScript 源码，无需编译；需先安装 bun）
 pnpm dev
+
+# 改动源码后自动重启
+pnpm dev:watch
+
+# 类型检查
+pnpm typecheck
 
 # global link
 npm link
 ```
+
+开发模式依赖 [bun](https://bun.sh/)（`bun run src/cli.ts` 直接执行 TS 源码），不再依赖 ts-node。
 
 或者 fork 本项目进行代码贡献。
 
