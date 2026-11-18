@@ -2,4 +2,6 @@
  * LocalSend 页面样式入口（Tailwind CSS v4）
  * 构建：pnpm run build:css  →  生成 style.css（已提交到仓库，无需联网）
  */
-@import 'tailwindcss';
+@import 'tailwindcss' source(none);
+/* 仅扫描本目录的页面，避免把 dist/、临时目录等无关内容编进产物 */
+@source './index.html';
