@@ -375,6 +375,34 @@ export async function initLocalsend(app: Express): Promise<void> {
     res.json({ code: 0 });
   });
 
+  // 批量删除
+  app.post(
+    '/localsend/api/delete-batch',
+    // 本模块未启用全局 JSON 解析，这里单独挂载
+    express.json({ limit: '1mb' }),
+    (req: Request, res: Response) => {
+      const names = Array.isArray(req.body?.names) ? req.body.names : [];
+      const deleted: string[] = [];
+      const failed: string[] = [];
+      for (const item of names.slice(0, 500)) {
+        const rel = safeRelPath(item);
+        const filePath = rel ? resolveInDir(dir, rel) : '';
+        if (!filePath || !existsSync(filePath)) {
+          failed.push(String(item));
+          continue;
+        }
+        try {
+          rmSync(filePath);
+          deleted.push(rel);
+        } catch (err) {
+          logger.error('[localsend 删除]', err);
+          failed.push(rel);
+        }
+      }
+      res.json({ code: 0, data: { deleted, failed } });
+    },
+  );
+
   // 清理上传残留的临时文件（上传中断时可能留下无扩展名的哈希文件）
   app.post('/localsend/api/cleanup-temp', (_req: Request, res: Response) => {
     const removed = cleanupTempFiles(dir);
