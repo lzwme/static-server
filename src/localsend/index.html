@@ -47,7 +47,8 @@
         <p class="text-[11px] sm:text-xs text-slate-500 mt-2">支持多文件同时上传 · 文件保存在本机 · 实时显示传输进度</p>
         <input id="fileInput" type="file" multiple />
       </div>
-      <div id="uploadList" class="mt-4 space-y-2"></div>
+      <div id="uploadSummary" class="hidden mt-3 px-3 py-2 bg-slate-900/70 border border-slate-800 rounded-xl flex items-center gap-2 text-[11px] sm:text-xs flex-wrap"></div>
+      <div id="uploadList" class="mt-3 space-y-2"></div>
     </div>
   </section>
 
@@ -254,9 +255,91 @@
   }
 
   function uploadFiles(fileList) {
-    Array.prototype.forEach.call(fileList, uploadOne);
+    Array.prototype.forEach.call(fileList, function (f) { enqueueUpload(f); });
+    pumpQueue();
   }
-  function uploadOne(file) {
+
+  // ---------------------------------------------------------------------------
+  // 上传并发队列
+  //
+  // 服务端对单 IP 的并发上传数有上限（默认 3），一次选中几十个文件时
+  // 若同时发起所有请求，超出的会被直接拒绝（429）。
+  // 这里用队列把并发控制在安全范围内，并对被限流的请求自动退避重试。
+  // ---------------------------------------------------------------------------
+  var UPLOAD_CONCURRENCY = 3; // 与服务端 maxConcurrent 默认值保持一致
+  var MAX_RETRY = 3; // 单个文件最多重试次数
+  var uploadQueue = []; // 待上传的文件
+  var uploadActive = 0; // 当前进行中的上传数
+  var uploadDone = 0; // 已完成（含失败）的数量
+  var uploadFailed = 0; // 失败数量
+  var uploadTotal = 0; // 本批次总数
+  var listReloadTimer = null;
+
+  /**
+   * 延迟刷新列表，避免每个文件上传完都请求一次
+   */
+  function scheduleListReload() {
+    if (listReloadTimer) return;
+    listReloadTimer = setTimeout(function () {
+      listReloadTimer = null;
+      loadFiles();
+    }, 600);
+  }
+
+  function updateQueueSummary() {
+    var el = $('uploadSummary');
+    if (!el) return;
+    if (!uploadTotal) {
+      el.classList.add('hidden');
+      return;
+    }
+    el.classList.remove('hidden');
+    var pending = uploadQueue.length;
+    var running = uploadActive;
+    el.innerHTML =
+      '<span class="text-slate-400">本批次</span>' +
+      '<span class="text-emerald-400 font-mono">' + (uploadDone + running) + '/' + uploadTotal + '</span>' +
+      '<span class="text-slate-400">已完成</span>' +
+      (running ? '<span class="text-sky-400 font-mono">' + running + '</span><span class="text-slate-400">传输中</span>' : '') +
+      (pending ? '<span class="text-slate-400 font-mono">' + pending + '</span><span class="text-slate-400">排队中</span>' : '') +
+      (uploadFailed ? '<span class="text-red-400 font-mono">' + uploadFailed + '</span><span class="text-slate-400">失败</span>' : '');
+  }
+
+  function enqueueUpload(file) {
+    uploadQueue.push(file);
+    uploadTotal += 1;
+    updateQueueSummary();
+  }
+
+  /** 从队列中取出下一个文件开始上传 */
+  function pumpQueue() {
+    while (uploadActive < UPLOAD_CONCURRENCY && uploadQueue.length) {
+      var file = uploadQueue.shift();
+      uploadActive += 1;
+      uploadOne(file, 0, function (ok) {
+        uploadActive -= 1;
+        uploadDone += 1;
+        if (!ok) uploadFailed += 1;
+        updateQueueSummary();
+        if (uploadDone >= uploadTotal) {
+          // 本批次结束
+          uploadQueue = [];
+          uploadTotal = 0;
+          uploadDone = 0;
+          uploadFailed = 0;
+          setTimeout(function () {
+            updateQueueSummary();
+            loadFiles();
+          }, 300);
+        } else {
+          pumpQueue();
+        }
+      });
+    }
+    updateQueueSummary();
+  }
+
+  function uploadOne(file, retryCount, onDone) {
     var fd = new FormData();
     fd.append('files', file);
     var row = document.createElement('div');
@@ -292,29 +375,60 @@
         lastTime = now;
       }
     };
-    xhr.onload = function () {
-      var ok = xhr.status === 200;
-      var json = null;
-      try { json = JSON.parse(xhr.responseText); } catch (e) { json = null; }
-      ok = ok && json && json.code === 0;
-      barEl.style.width = '100%';
+    var finished = false;
+    function finish(ok, msg) {
+      if (finished) return;
+      finished = true;
+      barEl.style.width = ok ? '100%' : barEl.style.width;
+      barEl.className = 'h-full ' + (ok ? 'bg-emerald-500' : 'bg-red-500');
+      statusEl.textContent = ok ? '上传完成' : msg || '上传失败';
       if (ok) {
-        barEl.className = 'h-full bg-emerald-500';
-        statusEl.textContent = '上传完成';
         pctEl.textContent = '100%';
-        toast('上传完成：' + file.name, 'ok');
-        loadFiles();
         setTimeout(function () { row.remove(); }, 1500);
       } else {
-        barEl.className = 'h-full bg-red-500';
-        statusEl.textContent = (json && json.msg) || '上传失败';
-        toast((json && json.msg) || '上传失败', 'err');
+        // 失败的任务保留在列表里，便于用户查看原因
+        setTimeout(function () { row.remove(); }, 6000);
       }
+      scheduleListReload();
+      onDone(ok);
+    }
+    xhr.onload = function () {
+      var json = null;
+      try { json = JSON.parse(xhr.responseText); } catch (e) { json = null; }
+      if (xhr.status === 200 && json && json.code === 0) {
+        toast('上传完成：' + file.name, 'ok');
+        finish(true);
+        return;
+      }
+      var msg = (json && json.msg) || '上传失败';
+      // 429 表示触发了并发/频率限制，退避后重试
+      if (xhr.status === 429 && retryCount < MAX_RETRY) {
+        statusEl.textContent = msg + '，重试中…';
+        barEl.className = 'h-full bg-amber-500';
+        var delay = 800 * Math.pow(2, retryCount);
+        setTimeout(function () {
+          row.remove();
+          // 重试期间保持活跃计数不变，避免队列在此期间调度新任务
+          uploadOne(file, retryCount + 1, onDone);
+        }, delay);
+        return;
+      }
+      toast(msg + '：' + file.name, 'err');
+      finish(false, msg);
     };
     xhr.onerror = function () {
-      barEl.className = 'h-full bg-red-500';
+      if (retryCount < MAX_RETRY) {
+        statusEl.textContent = '网络错误，重试中…';
+        barEl.className = 'h-full bg-amber-500';
+        setTimeout(function () {
+          row.remove();
+          uploadOne(file, retryCount + 1, onDone);
+        }, 800 * Math.pow(2, retryCount));
+        return;
+      }
       statusEl.textContent = '网络错误';
       toast('上传失败：' + file.name, 'err');
+      finish(false, '网络错误');
     };
     xhr.send(fd);
   }
