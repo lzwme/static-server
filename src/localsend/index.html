@@ -115,13 +115,19 @@
         <button id="orderBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 hover:bg-slate-700 transition">↓ 降序</button>
       </div>
     </div>
-    <div id="batchBar" class="hidden mb-2 px-3 sm:px-4 py-2 bg-slate-900 border border-slate-800 rounded-2xl flex items-center gap-2 sm:gap-3 text-xs">
+    <div id="batchBar" class="hidden mb-2 px-3 sm:px-4 py-2 bg-slate-900 border border-slate-800 rounded-2xl flex items-center gap-2 sm:gap-3 text-xs flex-wrap">
       <label class="flex items-center gap-1.5 cursor-pointer select-none text-slate-400 hover:text-slate-200 shrink-0">
         <input type="checkbox" id="selectAll" class="accent-emerald-500 w-3.5 h-3.5">
         <span class="hidden sm:inline">全选</span>
       </label>
       <span id="selectedCount" class="text-slate-500 hidden shrink-0"><em class="text-emerald-400 not-italic">0</em><span class="hidden sm:inline"> 项已选</span></span>
       <div class="flex-1 hidden sm:block"></div>
+      <button id="batchMove" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="移动到目录">
+        <span class="sm:hidden">📂</span><span class="hidden sm:inline">📂 移动</span>
+      </button>
+      <button id="batchRename" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量重命名">
+        <span class="sm:hidden">🔤</span><span class="hidden sm:inline">🔤 批量重命名</span>
+      </button>
       <button id="batchShare" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量分享">
         <span class="sm:hidden">🔗</span><span class="hidden sm:inline">🔗 批量分享</span>
       </button>
@@ -189,6 +195,54 @@
     </div>
     <p class="text-[11px] text-slate-500">删除的文件会先放入回收站，保留期内可还原；过期后自动清理。</p>
     <div id="trashList" class="overflow-auto flex-1 divide-y divide-slate-800 border border-slate-800 rounded-xl"></div>
+  </div>
+</div>
+
+<!-- 重命名 / 移动单个文件弹窗 -->
+<div id="renameModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-md flex flex-col gap-3">
+    <div class="text-sm font-medium">重命名文件</div>
+    <p id="renameDirHint" class="text-[11px] text-emerald-400"></p>
+    <p class="text-[11px] text-slate-500">只填文件名表示在当前目录改名；填「/文件名」移到根目录，填「目录/文件名」移到其它目录。</p>
+    <input id="renameInput" type="text" autocomplete="off" spellcheck="false"
+      class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-emerald-500/60" />
+    <div class="flex justify-end gap-2">
+      <button id="renameCancel" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1.5 transition">取消</button>
+      <button id="renameOk" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-medium rounded-lg px-4 py-1.5 transition">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 移动到目录弹窗 -->
+<div id="moveModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-md flex flex-col gap-3">
+    <div class="text-sm font-medium">移动到目录 <span id="moveCount" class="text-xs text-slate-400"></span></div>
+    <div id="moveDirList" class="max-h-52 overflow-auto border border-slate-800 rounded-xl divide-y divide-slate-800"></div>
+    <input id="moveDirInput" type="text" autocomplete="off" spellcheck="false" placeholder="或直接输入目录名，如 归档/2026"
+      class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-emerald-500/60" />
+    <div class="flex justify-end gap-2">
+      <button id="moveCancel" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1.5 transition">取消</button>
+      <button id="moveOk" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-medium rounded-lg px-4 py-1.5 transition">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 批量重命名弹窗 -->
+<div id="batchRenameModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-md flex flex-col gap-3">
+    <div class="text-sm font-medium">批量重命名 <span id="batchRenameCount" class="text-xs text-slate-400"></span></div>
+    <select id="batchRuleMode" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none">
+      <option value="prefix">添加前缀</option>
+      <option value="suffix">添加后缀</option>
+      <option value="replace">查找替换</option>
+      <option value="sequence">按序号重命名</option>
+    </select>
+    <div id="batchRuleParams" class="flex flex-col gap-2"></div>
+    <p id="batchRulePreview" class="text-[11px] text-slate-500 break-all"></p>
+    <div class="flex justify-end gap-2">
+      <button id="batchRenameCancel" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1.5 transition">取消</button>
+      <button id="batchRenameOk" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-medium rounded-lg px-4 py-1.5 transition">确定</button>
+    </div>
   </div>
 </div>
 

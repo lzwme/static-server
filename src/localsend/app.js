@@ -42,6 +42,7 @@
   var INBOX_WINDOW = 10 * 60 * 1000; // 收件箱时间窗口（10 分钟）
   var inboxNewCount = 0; // 进入收件箱后新收到的文件数
   var ownUploads = {}; // 本机刚上传的文件，避免自己提示自己
+  var suppressNotifyUntil = 0; // 自己操作后的静默期，不提示「收到新文件」
   var eventSource = null; // 文件变更事件连接
   var PAGE_SIZE = 50; // 每页显示的文件数（服务端分页）
   var PAGE_SIZE_OPTIONS = [20, 50, 100, 200]; // 可选的每页条数
@@ -282,11 +283,15 @@
       $('selectedCount').querySelector('em').textContent = count;
       $('batchShare').disabled = false;
       $('batchDownload').disabled = false;
+      $('batchMove').disabled = false;
+      $('batchRename').disabled = false;
       $('batchDelete').disabled = false;
     } else {
       $('selectedCount').classList.add('hidden');
       $('batchShare').disabled = true;
       $('batchDownload').disabled = true;
+      $('batchMove').disabled = true;
+      $('batchRename').disabled = true;
       $('batchDelete').disabled = true;
     }
   }
@@ -309,6 +314,288 @@
   /** 当前页显示的文件（用于全选范围） */
   function currentPageItems() {
     return fileItems;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 文件整理（重命名 / 移动 / 批量重命名）
+  //
+  // 整理结果直接体现在服务端的真实目录结构上，
+  // 前端只负责收集参数，并把服务端返回的新名字同步回列表。
+  // ---------------------------------------------------------------------------
+  /** 当前正在重命名的文件 */
+  var renameTarget = '';
+  /** 当前正在移动的文件列表 */
+  var moveTargets = [];
+  /** 当前正在批量重命名的文件列表 */
+  var batchTargets = [];
+  /** 服务端返回的目录与扩展名筛选项 */
+  var facetDirs = [];
+  var facetExts = [];
+
+  /** 打开重命名弹窗 */
+  function openRenameDialog(name) {
+    renameTarget = name;
+    var dir = dirOf(name);
+    $('renameInput').value = dir ? name.slice(dir.length + 1) : name;
+    $('renameDirHint').textContent = '当前位置：' + (dir ? dir + '/' : '根目录');
+    $('renameModal').classList.remove('hidden');
+    setTimeout(function () {
+      $('renameInput').focus();
+      $('renameInput').select();
+    }, 60);
+  }
+
+  /**
+   * 把用户输入的目标名拼成相对存储目录的路径。
+   *
+   * 只填文件名 → 留在当前目录改名；
+   * 以 / 开头 → 相对根目录；
+   * 含 / → 相对根目录的多级路径。
+   */
+  function buildRenameTarget(from, input) {
+    var value = input.trim();
+    if (value.charAt(0) === '/') return value.slice(1);
+    if (value.indexOf('/') >= 0) return value;
+    var dir = dirOf(from);
+    return dir ? dir + '/' + value : value;
+  }
+
+  /** 关闭重命名弹窗 */
+  function closeRenameDialog() {
+    $('renameModal').classList.add('hidden');
+    renameTarget = '';
+  }
+
+  /** 提交重命名 */
+  function submitRename() {
+    var from = renameTarget;
+    var input = $('renameInput').value.trim();
+    if (!from) return;
+    if (!input) {
+      toast('请填写新的名称', 'err');
+      return;
+    }
+    var to = buildRenameTarget(from, input);
+    // 自己改的文件不再触发「收到新文件」提示
+    suppressNotifyUntil = Date.now() + 2000;
+    fetch(withKey(API + '/rename'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: from, to: to }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) {
+          toast(json.msg || '重命名失败', 'err');
+          return;
+        }
+        // 选中状态跟着文件的新名字走
+        if (selected[from]) {
+          delete selected[from];
+          selected[json.data.to] = true;
+        }
+        // 自己改的名不再提示「收到新文件」
+        ownUploads[json.data.to] = Date.now();
+        closeRenameDialog();
+        toast('已重命名为 ' + json.data.to, 'ok');
+        refreshAll();
+      })
+      .catch(function () { toast('重命名失败', 'err'); });
+  }
+
+  /** 打开移动弹窗 */
+  function openMoveDialog(names) {
+    moveTargets = names.slice();
+    $('moveCount').textContent = '（' + names.length + ' 个文件）';
+    $('moveDirInput').value = '';
+    // 目录列表来自服务端，能看到所有已存在的目录
+    var html = '<button class="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition" data-dir="">根目录</button>';
+    facetDirs.forEach(function (d) {
+      html += '<button class="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition" data-dir="' + escapeHtml(d.path) + '">' + escapeHtml(d.path) + '</button>';
+    });
+    $('moveDirList').innerHTML = html;
+    $('moveModal').classList.remove('hidden');
+  }
+
+  /** 关闭移动弹窗 */
+  function closeMoveDialog() {
+    $('moveModal').classList.add('hidden');
+    moveTargets = [];
+  }
+
+  /** 提交移动 */
+  function submitMove() {
+    var names = moveTargets.slice();
+    if (!names.length) return;
+    var dir = $('moveDirInput').value.trim();
+    suppressNotifyUntil = Date.now() + 2000;
+    fetch(withKey(API + '/move'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names: names, dir: dir }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) {
+          toast(json.msg || '移动失败', 'err');
+          return;
+        }
+        var moved = (json.data && json.data.moved) || [];
+        var failed = (json.data && json.data.failed) || [];
+        // 移动后选中状态同步到新路径
+        moved.forEach(function (m) {
+          if (selected[m.from]) {
+            delete selected[m.from];
+            selected[m.to] = true;
+          }
+          // 自己移动的文件不再提示「收到新文件」
+          ownUploads[m.to] = Date.now();
+        });
+        closeMoveDialog();
+        if (failed.length) {
+          toast('已移动 ' + moved.length + ' 个，' + failed.length + ' 个失败', 'err');
+        } else {
+          toast('已移动 ' + moved.length + ' 个文件', 'ok');
+        }
+        refreshAll();
+      })
+      .catch(function () { toast('移动失败', 'err'); });
+  }
+
+  /** 收集批量重命名规则 */
+  function collectRule() {
+    var mode = $('batchRuleMode').value;
+    var rule = { mode: mode };
+    if (mode === 'prefix') rule.prefix = $('rulePrefix') ? $('rulePrefix').value : '';
+    else if (mode === 'suffix') rule.suffix = $('ruleSuffix') ? $('ruleSuffix').value : '';
+    else if (mode === 'replace') {
+      rule.find = $('ruleFind') ? $('ruleFind').value : '';
+      rule.replace = $('ruleReplace') ? $('ruleReplace').value : '';
+    } else if (mode === 'sequence') {
+      rule.start = Number($('ruleStart') ? $('ruleStart').value : 1) || 1;
+      rule.padding = Number($('rulePadding') ? $('rulePadding').value : 0) || 0;
+      rule.template = $('ruleTemplate') ? $('ruleTemplate').value : '{n}';
+    }
+    var ext = $('ruleExt');
+    if (ext && ext.value) rule.ext = ext.value;
+    return rule;
+  }
+
+  /**
+   * 本地预览重命名结果（与服务端规则保持一致）。
+   * 只用于给用户看效果，真正的重命名仍由服务端执行。
+   */
+  function previewRename(base, rule, index) {
+    if (rule.mode === 'prefix') return (rule.prefix || '') + base;
+    if (rule.mode === 'suffix') return base + (rule.suffix || '');
+    if (rule.mode === 'replace') {
+      if (!rule.find) return base;
+      return base.split(rule.find).join(rule.replace || '');
+    }
+    var start = rule.start || 1;
+    var num = rule.padding ? String(start + index).padStart(rule.padding, '0') : String(start + index);
+    return (rule.template || '{n}').replace('{n}', num).replace('{name}', base);
+  }
+
+  /** 更新批量重命名的预览提示 */
+  function updateRulePreview() {
+    var rule = collectRule();
+    var sample = batchTargets[0];
+    var el = $('batchRulePreview');
+    if (!el) return;
+    if (!sample) {
+      el.textContent = '';
+      return;
+    }
+    var fileName = sample.slice(sample.lastIndexOf('/') + 1);
+    var dot = fileName.lastIndexOf('.');
+    var base = dot > 0 ? fileName.slice(0, dot) : fileName;
+    var ext = dot > 0 ? fileName.slice(dot) : '';
+    var next = previewRename(base, rule, 0) + ext;
+    el.textContent = '示例：' + fileName + ' → ' + next + (batchTargets.length > 1 ? '（共 ' + batchTargets.length + ' 个文件）' : '');
+  }
+
+  /** 按当前模式渲染规则参数 */
+  function renderRuleParams() {
+    var mode = $('batchRuleMode').value;
+    var inputCls = 'bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-emerald-500/60';
+    var html = '';
+    if (mode === 'prefix') {
+      html += '<input id="rulePrefix" type="text" placeholder="前缀，如 备份-" class="' + inputCls + '" />';
+    } else if (mode === 'suffix') {
+      html += '<input id="ruleSuffix" type="text" placeholder="后缀，如 -副本" class="' + inputCls + '" />';
+    } else if (mode === 'replace') {
+      html += '<input id="ruleFind" type="text" placeholder="查找，如 2024" class="' + inputCls + '" />';
+      html += '<input id="ruleReplace" type="text" placeholder="替换为，如 2025" class="' + inputCls + '" />';
+    } else if (mode === 'sequence') {
+      html += '<div class="flex gap-2">';
+      html += '<input id="ruleStart" type="number" min="0" value="1" placeholder="起始序号" class="' + inputCls + ' flex-1" />';
+      html += '<input id="rulePadding" type="number" min="0" max="10" value="2" placeholder="补零位数" class="' + inputCls + ' flex-1" />';
+      html += '</div>';
+      html += '<input id="ruleTemplate" type="text" value="{n}" placeholder="模板，{n} 为序号、{name} 为原名" class="' + inputCls + '" />';
+    }
+    // 扩展名过滤：只处理某一类文件时可以限定范围
+    html += '<select id="ruleExt" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none">';
+    html += '<option value="">全部类型</option>';
+    facetExts.forEach(function (e) {
+      html += '<option value="' + escapeHtml(e.ext) + '">.' + escapeHtml(e.ext) + '（' + e.count + '）</option>';
+    });
+    html += '</select>';
+    $('batchRuleParams').innerHTML = html;
+    updateRulePreview();
+  }
+
+  /** 打开批量重命名弹窗 */
+  function openBatchRenameDialog(names) {
+    batchTargets = names.slice();
+    $('batchRenameCount').textContent = '（' + names.length + ' 个文件）';
+    renderRuleParams();
+    $('batchRenameModal').classList.remove('hidden');
+  }
+
+  /** 关闭批量重命名弹窗 */
+  function closeBatchRenameDialog() {
+    $('batchRenameModal').classList.add('hidden');
+    batchTargets = [];
+  }
+
+  /** 提交批量重命名 */
+  function submitBatchRename() {
+    var names = batchTargets.slice();
+    if (!names.length) return;
+    var rule = collectRule();
+    suppressNotifyUntil = Date.now() + 2000;
+    fetch(withKey(API + '/rename-batch'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names: names, rule: rule }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) {
+          toast(json.msg || '批量重命名失败', 'err');
+          return;
+        }
+        var renamed = (json.data && json.data.renamed) || [];
+        var failed = (json.data && json.data.failed) || [];
+        var skipped = (json.data && json.data.skipped) || [];
+        // 重命名后选中状态同步到新名字
+        renamed.forEach(function (m) {
+          if (selected[m.from]) {
+            delete selected[m.from];
+            selected[m.to] = true;
+          }
+          // 自己改的名字不再提示「收到新文件」
+          ownUploads[m.to] = Date.now();
+        });
+        closeBatchRenameDialog();
+        var tip = '已重命名 ' + renamed.length + ' 个文件';
+        if (skipped.length) tip += '，' + skipped.length + ' 个未变化';
+        if (failed.length) tip += '，' + failed.length + ' 个失败';
+        toast(tip, failed.length ? 'err' : 'ok');
+        refreshAll();
+      })
+      .catch(function () { toast('批量重命名失败', 'err'); });
   }
 
   // ---------------------------------------------------------------------------
@@ -455,6 +742,12 @@
   /** 处理服务端推送的文件变更 */
   function handleIncoming(names) {
     var now = Date.now();
+    // 自己刚做的整理操作（重命名、移动等）也会触发变更推送，
+    // 这段时间内不再提示「收到新文件」，避免把操作结果当成别人的文件
+    if (now < suppressNotifyUntil) {
+      refreshAll();
+      return;
+    }
     // 过滤掉本机刚上传的文件，避免自己提示自己
     var fresh = names.filter(function (n) {
       var at = ownUploads[n];
@@ -531,8 +824,10 @@
       .then(function (json) {
         if (json.code !== 0) return;
         var data = json.data || {};
-        updateDirOptions(data.dirs || [], data.rootCount || 0);
-        updateExtOptions(data.exts || []);
+        facetDirs = data.dirs || [];
+        facetExts = data.exts || [];
+        updateDirOptions(facetDirs, data.rootCount || 0);
+        updateExtOptions(facetExts);
       })
       .catch(function () {
         // 筛选选项拉取失败不影响主流程，静默忽略
@@ -601,7 +896,8 @@
         '<div class="flex items-center gap-1 sm:gap-1.5 shrink-0 justify-end w-full sm:w-auto">' +
           btn('预览', 'preview', false, '👁') + btn('下载', 'download', false, '⬇️') + btn('分享', 'share', false, '🔗') +
           (canSystemShare() ? btn('系统分享', 'syshare', false, '📤') : '') +
-          btn('复制', 'copy', false, '📋') + btn('扫码', 'qr', false, '📱') + btn('删除', 'delete', true, '🗑') +
+          btn('复制', 'copy', false, '📋') + btn('扫码', 'qr', false, '📱') +
+          btn('重命名', 'rename', false, '✏️') + btn('移动', 'move', false, '📂') + btn('删除', 'delete', true, '🗑') +
         '</div>';
       Array.prototype.forEach.call(div.querySelectorAll('button'), function (b) { b.dataset.name = f.name; });
       wrap.appendChild(div);
@@ -1714,6 +2010,33 @@
   });
   $('closeModal').addEventListener('click', function () { $('qrModal').classList.add('hidden'); });
   $('qrModal').addEventListener('click', function (e) { if (e.target === $('qrModal')) $('qrModal').classList.add('hidden'); });
+
+  // 重命名弹窗
+  $('renameCancel').addEventListener('click', closeRenameDialog);
+  $('renameOk').addEventListener('click', submitRename);
+  $('renameModal').addEventListener('click', function (e) { if (e.target === $('renameModal')) closeRenameDialog(); });
+  $('renameInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') submitRename();
+  });
+
+  // 移动弹窗
+  $('moveCancel').addEventListener('click', closeMoveDialog);
+  $('moveOk').addEventListener('click', submitMove);
+  $('moveModal').addEventListener('click', function (e) { if (e.target === $('moveModal')) closeMoveDialog(); });
+  $('moveDirList').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-dir]');
+    if (!btn) return;
+    // 根目录用空字符串表示
+    $('moveDirInput').value = btn.dataset.dir || '';
+  });
+
+  // 批量重命名弹窗
+  $('batchRenameCancel').addEventListener('click', closeBatchRenameDialog);
+  $('batchRenameOk').addEventListener('click', submitBatchRename);
+  $('batchRenameModal').addEventListener('click', function (e) { if (e.target === $('batchRenameModal')) closeBatchRenameDialog(); });
+  $('batchRuleMode').addEventListener('change', renderRuleParams);
+  $('batchRuleParams').addEventListener('input', updateRulePreview);
+  $('batchRuleParams').addEventListener('change', updateRulePreview);
   function closePreviewModal() {
     $('previewModal').classList.add('hidden');
     // 清空媒体内容，避免残留的音视频继续在后台播放
@@ -1760,6 +2083,8 @@
     else if (act === 'syshare') systemShare(name);
     else if (act === 'copy') copyLink(name);
     else if (act === 'qr') showQr(withKey(location.origin + API + '/download/' + encodeURIComponent(name)), '扫码直连下载：' + name);
+    else if (act === 'rename') openRenameDialog(name);
+    else if (act === 'move') openMoveDialog([name]);
     else if (act === 'delete') deleteFile(name);
   });
 
@@ -1794,6 +2119,18 @@
       return;
     }
     downloadZip(names);
+  });
+  // 批量移动到目录
+  $('batchMove').addEventListener('click', function () {
+    var names = Object.keys(selected).filter(function (n) { return selected[n]; });
+    if (!names.length) return;
+    openMoveDialog(names);
+  });
+  // 批量重命名
+  $('batchRename').addEventListener('click', function () {
+    var names = Object.keys(selected).filter(function (n) { return selected[n]; });
+    if (!names.length) return;
+    openBatchRenameDialog(names);
   });
   $('batchDelete').addEventListener('click', function () {
     var names = Object.keys(selected).filter(function (n) { return selected[n]; });
