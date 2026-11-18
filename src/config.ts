@@ -26,6 +26,10 @@ export interface LocalSendConfig {
   rateLimit?: { windowMs?: number; max?: number };
   /** 禁止上传的文件扩展名列表（如 ['.php', '.phtml']）。默认禁止常见服务端脚本 */
   blockExtensions?: string[];
+  /** 自动清理：文件的保留天数，超过后自动删除 */
+  autoCleanDays?: number;
+  /** 自动清理：存储目录容量上限（字节），超出后自动删除最旧的文件 */
+  autoCleanMaxSize?: number;
 }
 
 export interface SSConfig {

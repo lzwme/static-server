@@ -17,6 +17,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import multer from 'multer';
 import { getConfig } from './config';
 import { logger } from './get-logger';
+import { createCleaner } from './lib/localsend-cleaner';
 import { createGuard } from './lib/localsend-guard';
 import { listFiles, resolveInDir, safeRelPath } from './lib/localsend-path';
 import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
@@ -189,6 +190,18 @@ export async function initLocalsend(app: Express): Promise<void> {
     maxConcurrent: ls.maxConcurrent,
     rateLimit: ls.rateLimit,
   });
+
+  // 自动清理：避免接收端长期运行把磁盘撑满
+  if (ls.autoCleanDays || ls.autoCleanMaxSize) {
+    const cleaner = createCleaner({
+      dir,
+      maxAgeDays: ls.autoCleanDays,
+      maxTotalSize: ls.autoCleanMaxSize,
+      onRemoved: (names) => logger.log(color.yellow('LocalSend 清理 : '.padStart(15, ' ')), color.yellowBright(`已删除 ${names.length} 个过期文件`)),
+    });
+    // 启动时先清理一次
+    setTimeout(() => cleaner.run(), 5000).unref?.();
+  }
 
   const port = config.port || 80;
   const ipUrl = `http://${getIp() || 'localhost'}:${port}`;
