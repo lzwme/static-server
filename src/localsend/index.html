@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="/localsend/style.css" />
 <script src="/localsend/vendor/qr-code-styling.js"></script>
 <style>
-  #fileInput { display: none; }
+  #fileInput, #dirInput { display: none; }
   #toast { transition: opacity .25s; }
   #toast.hidden { opacity: 0; pointer-events: none; }
   #pageQr canvas { width: 100% !important; height: auto !important; display: block; }
@@ -49,6 +49,13 @@
     </div>
 
     <div class="w-full">
+      <div class="flex items-center gap-2 mb-3 flex-wrap">
+        <button id="pickDirBtn" class="px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 hover:border-emerald-500/40 transition text-xs sm:text-sm text-slate-300 shrink-0" title="上传整个文件夹，服务端会保留原有目录结构">
+          📁 上传文件夹
+        </button>
+        <span class="text-[11px] sm:text-xs text-slate-500 hidden sm:inline">保留原有目录结构</span>
+        <input id="dirInput" type="file" webkitdirectory directory multiple />
+      </div>
       <!-- 移动端隐藏大上传区，改用右下角悬浮按钮，列表优先 -->
       <div id="dropZone" class="hidden sm:block border-2 border-dashed border-slate-600 hover:border-emerald-400 rounded-2xl p-6 sm:p-10 text-center transition cursor-pointer select-none">
         <div class="text-3xl sm:text-4xl mb-3">📤</div>
@@ -74,6 +81,9 @@
             class="bg-slate-800 border border-slate-700 rounded-lg pl-7 pr-2.5 sm:pr-3 py-1.5 outline-none focus:border-emerald-500/60 placeholder:text-slate-500 w-32 sm:w-44" />
           <span class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 text-xs pointer-events-none">🔍</span>
         </div>
+        <select id="dirSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 outline-none cursor-pointer" title="按所在目录筛选">
+          <option value="">全部目录</option>
+        </select>
         <select id="sortSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 outline-none cursor-pointer">
           <option value="time">按时间排序</option>
           <option value="size">按大小排序</option>
@@ -187,6 +197,8 @@
   }
   // 搜索关键词与分页状态
   var searchKeyword = '';
+  // 目录筛选：空字符串表示不过滤，'__root__' 表示只看根目录文件
+  var dirFilter = '';
   var PAGE_SIZE = 50; // 每页显示的文件数
   var currentPage = 1;
   var totalPages = 1;
@@ -326,11 +338,54 @@
 
   /** 当前页显示的文件（用于全选范围） */
   function currentPageItems() {
-    var kw = searchKeyword ? searchKeyword.toLowerCase() : '';
-    var filtered = fileItems;
-    if (kw) filtered = fileItems.filter(function (f) { return f.name.toLowerCase().indexOf(kw) >= 0; });
+    var filtered = filterItems(fileItems);
     var start = (currentPage - 1) * PAGE_SIZE;
     return filtered.slice(start, start + PAGE_SIZE);
+  }
+
+  /** 按关键词与目录筛选文件（列表渲染与全选范围共用同一套规则） */
+  function filterItems(list) {
+    var filtered = list;
+    if (searchKeyword) {
+      var kw = searchKeyword.toLowerCase();
+      filtered = filtered.filter(function (f) { return f.name.toLowerCase().indexOf(kw) >= 0; });
+    }
+    if (dirFilter) {
+      filtered = filtered.filter(function (f) {
+        var d = dirOf(f.name);
+        return dirFilter === '__root__' ? !d : d === dirFilter;
+      });
+    }
+    return filtered;
+  }
+
+  /** 取文件所在目录（相对路径，无目录时返回空串） */
+  function dirOf(name) {
+    var i = name.lastIndexOf('/');
+    return i < 0 ? '' : name.slice(0, i);
+  }
+
+  /** 刷新目录筛选下拉选项 */
+  function updateDirOptions(list) {
+    var sel = $('dirSelect');
+    if (!sel) return;
+    var dirs = {};
+    var rootCount = 0;
+    list.forEach(function (f) {
+      var d = dirOf(f.name);
+      if (!d) rootCount++;
+      else dirs[d] = (dirs[d] || 0) + 1;
+    });
+    var names = Object.keys(dirs).sort();
+    var html = '<option value="">全部目录</option>';
+    if (rootCount) html += '<option value="__root__">根目录（' + rootCount + '）</option>';
+    names.forEach(function (d) {
+      html += '<option value="' + escapeHtml(d) + '">' + escapeHtml(d) + '（' + dirs[d] + '）</option>';
+    });
+    sel.innerHTML = html;
+    // 目录已不存在（被删除或移动）时回到「全部目录」
+    if (dirFilter && dirFilter !== '__root__' && !dirs[dirFilter]) dirFilter = '';
+    sel.value = dirFilter;
   }
 
   function renderList(list) {
@@ -340,12 +395,11 @@
     list.forEach(function(f) { if (selected[f.name]) keep[f.name] = true; });
     selected = keep;
 
-    // 按搜索关键词过滤（不区分大小写，支持路径片段匹配）
-    var filtered = list;
-    if (searchKeyword) {
-      var kw = searchKeyword.toLowerCase();
-      filtered = list.filter(function (f) { return f.name.toLowerCase().indexOf(kw) >= 0; });
-    }
+    // 先刷新目录选项（目录可能已被删除，需要重置筛选条件）
+    updateDirOptions(list);
+
+    // 按搜索关键词与所在目录过滤
+    var filtered = filterItems(list);
 
     // 分页
     totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -364,7 +418,7 @@
     } else {
       $('emptyTip').textContent = '暂无文件，上传第一个文件开始传输吧';
     }
-    $('fileCount').textContent = searchKeyword
+    $('fileCount').textContent = (searchKeyword || dirFilter)
       ? '(' + filtered.length + '/' + list.length + ')'
       : '(' + list.length + ')';
     updateBatchUI();
@@ -374,11 +428,17 @@
       div.className = 'flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2.5 sm:py-3 hover:bg-slate-800/60 transition flex-wrap' + (selected[f.name] ? ' bg-slate-800/40' : '');
       div.dataset.name = f.name;
       if (highlightNames[f.name]) div.classList.add('file-new-flash');
+      // 子目录文件：主标题显示文件名，前面带可点击的目录标记
+      var dir = dirOf(f.name);
+      var base = dir ? f.name.slice(dir.length + 1) : f.name;
       div.innerHTML =
         '<label class="flex items-center shrink-0 cursor-pointer"><input type="checkbox" class="file-check accent-emerald-500 w-3.5 h-3.5" data-name="' + escapeHtml(f.name) + '"' + (selected[f.name] ? ' checked' : '') + '></label>' +
         '<span class="text-xl sm:text-2xl shrink-0">' + fileIcon(f.name) + '</span>' +
         '<div class="min-w-0 flex-1">' +
-          '<div class="text-sm truncate text-slate-200" title="' + escapeHtml(f.name) + '">' + escapeHtml(f.name) + '</div>' +
+          '<div class="text-sm truncate text-slate-200" title="' + escapeHtml(f.name) + '">' +
+            (dir ? '<span class="text-slate-500 hover:text-emerald-400 cursor-pointer" data-dir="' + escapeHtml(dir) + '" title="只看该目录">' + escapeHtml(dir) + '/</span> ' : '') +
+            escapeHtml(base) +
+          '</div>' +
           '<div class="text-xs text-slate-500 mt-0.5">' + fmtSize(f.size) + ' · ' + fmtTime(f.mtime) + '</div>' +
         '</div>' +
         '<div class="flex items-center gap-1 sm:gap-1.5 shrink-0 justify-end w-full sm:w-auto">' +
@@ -420,8 +480,60 @@
     }
   }
 
+  /**
+   * 递归展开拖拽进来的目录条目。
+   *
+   * 浏览器拖拽文件夹时只会给出目录条目本身，需要逐层读取子项，
+   * 最终返回 [{ file, rel }] 列表，rel 为带目录前缀的相对路径。
+   */
+  function readEntry(entry, prefix) {
+    return new Promise(function (resolve) {
+      if (entry.isFile) {
+        entry.file(
+          function (f) { resolve([{ file: f, rel: prefix + f.name }]); },
+          function () { resolve([]); }
+        );
+        return;
+      }
+      if (!entry.isDirectory) {
+        resolve([]);
+        return;
+      }
+      var reader = entry.createReader();
+      var pending = [];
+      var readBatch = function () {
+        reader.readEntries(
+          function (list) {
+            // 每次最多返回 100 项，读到空数组才算读完
+            if (!list.length) {
+              Promise.all(pending).then(function (parts) {
+                var out = [];
+                parts.forEach(function (arr) { out = out.concat(arr); });
+                resolve(out);
+              });
+              return;
+            }
+            list.forEach(function (child) { pending.push(readEntry(child, prefix + entry.name + '/')); });
+            readBatch();
+          },
+          function () { resolve([]); }
+        );
+      };
+      readBatch();
+    });
+  }
+
+  /**
+   * 加入上传队列。
+   *
+   * 上传文件夹时浏览器会给出 webkitRelativePath（形如「目录/子目录/文件.txt」），
+   * 这里把它作为 multipart 的 filename 一起发送，服务端据此还原目录结构。
+   */
   function uploadFiles(fileList) {
-    Array.prototype.forEach.call(fileList, function (f) { enqueueUpload(f); });
+    Array.prototype.forEach.call(fileList, function (f) {
+      var rel = f.webkitRelativePath || f.name;
+      enqueueUpload(f, rel);
+    });
     pumpQueue();
   }
 
@@ -503,8 +615,8 @@
       (uploadFailed ? '<span class="text-red-400 font-mono">' + uploadFailed + '</span><span class="text-slate-400">失败</span>' : '');
   }
 
-  function enqueueUpload(file) {
-    uploadQueue.push(file);
+  function enqueueUpload(file, rel) {
+    uploadQueue.push({ file: file, rel: rel || file.name });
     uploadTotal += 1;
     updateQueueSummary();
   }
@@ -512,9 +624,9 @@
   /** 从队列中取出下一个文件开始上传 */
   function pumpQueue() {
     while (uploadActive < UPLOAD_CONCURRENCY && uploadQueue.length) {
-      var file = uploadQueue.shift();
+      var item = uploadQueue.shift();
       uploadActive += 1;
-      uploadOne(file, 0, function (ok) {
+      uploadOne(item, 0, function (ok) {
         uploadActive -= 1;
         uploadDone += 1;
         if (!ok) uploadFailed += 1;
@@ -537,14 +649,25 @@
     updateQueueSummary();
   }
 
-  function uploadOne(file, retryCount, onDone) {
-    var fd = new FormData();
-    fd.append('files', file);
+  function uploadOne(item, retryCount, onDone) {
+    var file = item.file;
+    var rel = item.rel || file.name;
+    var fd;
+    try {
+      fd = new FormData();
+      // 第三个参数指定 multipart 里的 filename，服务端据此保留目录结构
+      fd.append('files', file, rel);
+    } catch (err) {
+      // 构造请求失败时必须正常收尾，否则队列的活跃计数不会释放，后续上传全部卡住
+      toast('上传失败：' + rel, 'err');
+      onDone(false);
+      return;
+    }
     var row = document.createElement('div');
     row.className = 'bg-slate-800/70 border border-slate-700 rounded-xl px-4 py-3';
     row.innerHTML =
       '<div class="flex items-center justify-between gap-3 mb-2">' +
-        '<span class="text-xs truncate text-slate-300">' + escapeHtml(file.name) + '</span>' +
+        '<span class="text-xs truncate text-slate-300" title="' + escapeHtml(rel) + '">' + escapeHtml(rel) + '</span>' +
         '<span class="text-xs text-emerald-400 shrink-0 font-mono" data-pct>0%</span>' +
       '</div>' +
       '<div class="h-1.5 bg-slate-700 rounded-full overflow-hidden">' +
@@ -596,9 +719,9 @@
       if (xhr.status === 200 && json && json.code === 0) {
         // 服务端可能在同名时追加 _1 后缀，以返回的实际文件名为准
         var results = (json.data && json.data.results) || [];
-        var saved = results.length ? results[0].name : file.name;
-        var renamed = saved !== file.name;
-        toast(renamed ? '上传完成：' + file.name + ' → ' + saved + '（同名已自动改名）' : '上传完成：' + file.name, 'ok');
+        var saved = results.length ? results[0].name : rel;
+        var renamed = saved !== rel;
+        toast(renamed ? '上传完成：' + rel + ' → ' + saved + '（同名已自动改名）' : '上传完成：' + rel, 'ok');
         // 等待新文件出现在列表中，然后定位高亮
         waitForHighlight([saved]);
         finish(true);
@@ -613,11 +736,11 @@
         setTimeout(function () {
           row.remove();
           // 重试期间保持活跃计数不变，避免队列在此期间调度新任务
-          uploadOne(file, retryCount + 1, onDone);
+          uploadOne(item, retryCount + 1, onDone);
         }, delay);
         return;
       }
-      toast(msg + '：' + file.name, 'err');
+      toast(msg + '：' + rel, 'err');
       finish(false, msg);
     };
     xhr.onerror = function () {
@@ -626,12 +749,12 @@
         barEl.className = 'h-full bg-amber-500';
         setTimeout(function () {
           row.remove();
-          uploadOne(file, retryCount + 1, onDone);
+          uploadOne(item, retryCount + 1, onDone);
         }, 800 * Math.pow(2, retryCount));
         return;
       }
       statusEl.textContent = '网络错误';
-      toast('上传失败：' + file.name, 'err');
+      toast('上传失败：' + rel, 'err');
       finish(false, '网络错误');
     };
     xhr.send(fd);
@@ -1133,9 +1256,52 @@
   $('dropZone').addEventListener('drop', function (e) {
     e.preventDefault();
     $('dropZone').classList.remove('border-emerald-400');
-    if (e.dataTransfer && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+    var dt = e.dataTransfer;
+    if (!dt) return;
+    // 拖入文件夹时浏览器只给出目录条目，需要递归展开后再上传
+    var entries = [];
+    if (dt.items) {
+      Array.prototype.forEach.call(dt.items, function (it) {
+        if (it.webkitGetAsEntry) {
+          var en = it.webkitGetAsEntry();
+          if (en) entries.push(en);
+        }
+      });
+    }
+    var hasDir = entries.some(function (en) { return en.isDirectory; });
+    if (hasDir) {
+      Promise.all(entries.map(function (en) { return readEntry(en, ''); })).then(function (parts) {
+        var list = [];
+        parts.forEach(function (arr) { list = list.concat(arr); });
+        if (!list.length) {
+          toast('拖入的文件夹里没有文件', 'err');
+          return;
+        }
+        list.forEach(function (it) { enqueueUpload(it.file, it.rel); });
+        pumpQueue();
+        toast('正在上传文件夹，共 ' + list.length + ' 个文件');
+      });
+      return;
+    }
+    if (dt.files && dt.files.length) uploadFiles(dt.files);
   });
   $('fileInput').addEventListener('change', function (e) { uploadFiles(e.target.files); e.target.value = ''; });
+  // 上传文件夹：保留原有目录结构
+  $('pickDirBtn').addEventListener('click', function () { $('dirInput').click(); });
+  $('dirInput').addEventListener('change', function (e) {
+    var files = e.target.files;
+    if (files && files.length) {
+      uploadFiles(files);
+      toast('正在上传文件夹，共 ' + files.length + ' 个文件');
+    }
+    e.target.value = '';
+  });
+  // 按目录筛选
+  $('dirSelect').addEventListener('change', function (e) {
+    dirFilter = e.target.value;
+    currentPage = 1;
+    renderList(fileItems);
+  });
   $('pageUrl').addEventListener('click', function () { window.open(pageUrl, '_blank'); });
   $('pageQrCard').addEventListener('click', function (e) {
     if (e.target.closest('button')) return; // 不拦截 openPageBtn
@@ -1209,6 +1375,14 @@
       .catch(function () { toast('清空失败', 'err'); });
   });
   $('fileList').addEventListener('click', function (e) {
+    // 点击文件名前的目录标记：只看该目录下的文件
+    var dirEl = e.target.closest('[data-dir]');
+    if (dirEl) {
+      dirFilter = dirFilter === dirEl.dataset.dir ? '' : dirEl.dataset.dir;
+      currentPage = 1;
+      renderList(fileItems);
+      return;
+    }
     var btnEl = e.target.closest('button[data-act]');
     if (!btnEl) return;
     var name = btnEl.dataset.name;
