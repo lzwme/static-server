@@ -25,8 +25,9 @@ import { createListCache } from './lib/localsend-cache';
 import { createChunkStore, MAX_CHUNK_SIZE } from './lib/localsend-chunk';
 import { createCleaner } from './lib/localsend-cleaner';
 import { createGuard } from './lib/localsend-guard';
+import { batchRename, moveFiles, parseRenameRule, renameFile, uniqueName } from './lib/localsend-manage';
 import { resolveInDir, safeRelPath } from './lib/localsend-path';
-import { collectDirs, collectExts, filterEntries, paginate, parseListQuery, sortEntries } from './lib/localsend-query';
+import { collectDirs, collectExts, filterEntries, paginate, parseListQuery, ROOT_DIR, sortEntries } from './lib/localsend-query';
 import { createShareStore } from './lib/localsend-share';
 import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
 import { createTrash } from './lib/localsend-trash';
@@ -99,26 +100,6 @@ export function repairLocalsendNames(dir: string): [string, string][] {
     }
   }
   return renamed;
-}
-
-/**
- * 同名文件自动追加 _1/_2 后缀（支持子目录，相对路径用 `/` 分隔）
- */
-function uniqueName(targetDir: string, relName: string): string {
-  const rel = safeRelPath(relName);
-  if (!rel) return '';
-  const parts = rel.split('/');
-  const fileName = parts.pop() as string;
-  const subDir = join(targetDir, ...parts);
-  const ext = extname(fileName);
-  const base = fileName.slice(0, fileName.length - ext.length);
-  let finalName = fileName;
-  let i = 1;
-  while (existsSync(join(subDir, finalName))) {
-    finalName = `${base}_${i}${ext}`;
-    i += 1;
-  }
-  return parts.length ? `${parts.join('/')}/${finalName}` : finalName;
 }
 
 /** 取请求中的相对路径参数（支持通配符路由） */
@@ -801,6 +782,44 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       logger.error('[localsend zip]', err);
       res.end();
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 文件整理（纯文件操作）
+  //
+  // 只改真实目录结构，不引入任何元数据存储，
+  // 因此整理完的文件在回收站、分享链接、WebDAV 里都能直接看到。
+  // ---------------------------------------------------------------------------
+
+  // 重命名 / 移动单个文件（to 带目录即为移动）
+  app.post('/localsend/api/rename', express.json({ limit: '64kb' }), (req: Request, res: Response) => {
+    const from = String(req.body?.from ?? '');
+    const to = String(req.body?.to ?? '');
+    const result = renameFile(dir, from, to);
+    if (result.code !== 0) return void res.status(400).json({ code: 1, msg: result.msg });
+    res.json({ code: 0, data: { from: result.from, to: result.to } });
+  });
+
+  // 批量移动到指定目录
+  app.post('/localsend/api/move', express.json({ limit: '1mb' }), (req: Request, res: Response) => {
+    const names = Array.isArray(req.body?.names) ? req.body.names : [];
+    if (!names.length) return void res.status(400).json({ code: 1, msg: '未指定要移动的文件' });
+    const rawDir = String(req.body?.dir ?? '').trim();
+    // 目标目录非法时直接拒绝，避免把文件挪到存储目录之外
+    if (rawDir && rawDir !== ROOT_DIR && !safeRelPath(rawDir)) {
+      return void res.status(400).json({ code: 1, msg: '非法的目标目录' });
+    }
+    const result = moveFiles(dir, names, rawDir);
+    res.json({ code: 0, data: result });
+  });
+
+  // 按规则批量重命名
+  app.post('/localsend/api/rename-batch', express.json({ limit: '1mb' }), (req: Request, res: Response) => {
+    const names = Array.isArray(req.body?.names) ? req.body.names : [];
+    if (!names.length) return void res.status(400).json({ code: 1, msg: '未指定要重命名的文件' });
+    const rule = parseRenameRule(req.body?.rule);
+    const result = batchRename(dir, names, rule);
+    res.json({ code: 0, data: result });
   });
 
   // 批量删除
