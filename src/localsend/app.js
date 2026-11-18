@@ -52,6 +52,17 @@
           })
           .catch(function () {});
       }
+      // 访问令牌被改或缺失：提示用户用新链接访问（登录接口的 401 不在此提示）
+      if (r.status === 401) {
+        r.clone()
+          .json()
+          .then(function (json) {
+            if (json && json.msg && String(json.msg).indexOf('访问令牌') >= 0) {
+              toast('访问令牌无效或已变更，请使用新的链接访问', 'err');
+            }
+          })
+          .catch(function () {});
+      }
       return r;
     });
   }
@@ -2461,7 +2472,214 @@
     else if (btn.dataset.act === 'revoke') revokeShare(row.dataset.token);
   });
 
-  // 登录与退出
+  // ---------------------------------------------------------------------------
+  // 设置面板
+  //
+  // 管理员可在网页端直接改口令、令牌与各项限制，改完立即生效。
+  // 数值项按更易懂的单位显示（字节换算成 MB、毫秒换算成小时），
+  // 提交时再换算回服务端使用的原始单位。
+  // ---------------------------------------------------------------------------
+
+  /** 设置项的分组与展示单位 */
+  var SETTINGS_GROUPS = [
+    { title: '访问控制', keys: ['token', 'password', 'visitorPassword', 'sessionTtl'] },
+    { title: '传输限制', keys: ['maxSize', 'maxTotalSize', 'maxConcurrent', 'rateLimit'] },
+    { title: '文件维护', keys: ['trashDays', 'autoCleanDays', 'autoCleanMaxSize', 'blockExtensions'] },
+  ];
+
+  /** 各设置项在界面上的单位换算 */
+  var SETTINGS_UNITS = {
+    maxSize: { factor: 1024 * 1024, label: 'MB' },
+    maxTotalSize: { factor: 1024 * 1024, label: 'MB' },
+    autoCleanMaxSize: { factor: 1024 * 1024, label: 'MB' },
+    sessionTtl: { factor: 3600 * 1000, label: '小时' },
+  };
+
+  /** 设置面板当前的取值快照 */
+  var settingsState = { items: [], restartRequired: [], file: '' };
+
+  /** 取某个设置项 */
+  function settingItem(key) {
+    for (var i = 0; i < settingsState.items.length; i++) {
+      if (settingsState.items[i].key === key) return settingsState.items[i];
+    }
+    return null;
+  }
+
+  /** 渲染单个设置项 */
+  function renderSetting(item) {
+    var head =
+      '<div class="flex items-center justify-between gap-2">' +
+        '<div class="text-slate-200 font-medium">' + escapeHtml(item.label) +
+          (item.set ? '<span class="ml-1 text-[10px] text-emerald-400">已启用</span>' : '<span class="ml-1 text-[10px] text-slate-500">未启用</span>') +
+          (item.source === 'runtime' ? '<span class="ml-1 text-[10px] text-sky-400">运行时</span>' : '') +
+        '</div>' +
+        (item.source === 'runtime'
+          ? '<button data-reset="' + item.key + '" class="text-[11px] text-slate-400 hover:text-emerald-400 px-2 py-1 rounded border border-slate-700 transition shrink-0">恢复默认</button>'
+          : '') +
+      '</div>';
+
+    var input = '';
+    if (item.kind === 'secret') {
+      // 敏感项不显示原文，只提示当前状态；留空表示不修改
+      input =
+        '<input data-key="' + item.key + '" type="password" placeholder="' + (item.set ? '已设置（' + escapeHtml(item.masked || '') + '），留空表示不修改' : '留空表示不修改') + '" ' +
+        'autocomplete="new-password" spellcheck="false" class="mt-2 w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500/60" />' +
+        (item.set
+          ? '<button data-clear="' + item.key + '" class="mt-1 text-[11px] text-red-400 hover:text-red-300 px-2 py-1 rounded border border-red-500/30 transition">清除（停用该项）</button>'
+          : '');
+    } else if (item.kind === 'rate') {
+      var rate = item.value || { windowMs: 60000, max: 120 };
+      input =
+        '<div class="mt-2 flex items-center gap-2 flex-wrap">' +
+          '<input data-key="rateLimit.windowMs" type="number" min="1" value="' + Math.round((rate.windowMs || 60000) / 1000) + '" ' +
+            'class="w-20 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-emerald-500/60" />' +
+          '<span class="text-[11px] text-slate-500">秒内最多</span>' +
+          '<input data-key="rateLimit.max" type="number" min="0" value="' + Number(rate.max ?? 120) + '" ' +
+            'class="w-20 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-emerald-500/60" />' +
+          '<span class="text-[11px] text-slate-500">次请求（0 表示不限制）</span>' +
+        '</div>';
+    } else if (item.kind === 'numberList') {
+      input =
+        '<input data-key="' + item.key + '" type="text" value="' + escapeHtml((item.value || []).join(', ')) + '" ' +
+        'placeholder="如 .php, .sh" spellcheck="false" class="mt-2 w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500/60" />';
+    } else {
+      var unit = SETTINGS_UNITS[item.key];
+      var shown = Number(item.value ?? 0);
+      if (unit) shown = Math.round((shown / unit.factor) * 100) / 100;
+      input =
+        '<div class="mt-2 flex items-center gap-2">' +
+          '<input data-key="' + item.key + '" type="number" min="0" value="' + shown + '" ' +
+            'class="w-28 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-emerald-500/60" />' +
+          (unit ? '<span class="text-[11px] text-slate-500">' + unit.label + '</span>' : '') +
+          (item.unit && !unit ? '<span class="text-[11px] text-slate-500">' + escapeHtml(item.unit) + '</span>' : '') +
+        '</div>';
+    }
+
+    return '<div class="bg-slate-800/40 border border-slate-800 rounded-xl p-3">' + head + input +
+      '<div class="text-[11px] text-slate-500 mt-1.5">' + escapeHtml(item.desc) + '</div></div>';
+  }
+
+  /** 打开设置面板 */
+  function openSettings() {
+    apiFetch(API + '/settings')
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) { toast(json.msg || '读取设置失败', 'err'); return; }
+        settingsState = json.data || settingsState;
+        var body = $('settingsBody');
+        var html = '';
+        SETTINGS_GROUPS.forEach(function (group) {
+          var items = group.keys.map(settingItem).filter(Boolean);
+          if (!items.length) return;
+          html += '<div><div class="text-[11px] text-slate-400 mb-1.5">' + group.title + '</div><div class="space-y-2">' +
+            items.map(renderSetting).join('') + '</div></div>';
+        });
+        // 这两项与路由注册、存储路径有关，只能改配置文件后重启
+        if (settingsState.restartRequired && settingsState.restartRequired.length) {
+          html += '<div><div class="text-[11px] text-slate-400 mb-1.5">需重启服务才能生效</div><div class="space-y-2">' +
+            settingsState.restartRequired.map(function (item) {
+              return '<div class="bg-slate-800/40 border border-slate-800 rounded-xl p-3">' +
+                '<div class="flex items-center justify-between gap-2"><div class="text-slate-200 font-medium">' + escapeHtml(item.label) + '</div>' +
+                '<span class="text-[10px] text-amber-400">仅配置文件可改</span></div>' +
+                '<div class="text-[11px] text-slate-500 mt-1.5 font-mono break-all">' + escapeHtml(String(item.value)) + '</div></div>';
+            }).join('') + '</div></div>';
+        }
+        if (settingsState.file) {
+          html += '<div class="text-[11px] text-slate-500">运行时设置保存在：<span class="font-mono break-all">' +
+            escapeHtml(settingsState.file) + '</span></div>';
+        }
+        body.innerHTML = html;
+        $('settingsModal').classList.remove('hidden');
+      })
+      .catch(function () { toast('读取设置失败', 'err'); });
+  }
+
+  /** 收集面板里改动过的项 */
+  function collectSettingChanges() {
+    var changes = {};
+    var rate = null;
+    var nodes = $('settingsBody').querySelectorAll('[data-key]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      var key = el.dataset.key;
+      // 只提交用户动过的输入框
+      if (el.dataset.touched !== '1') continue;
+      var raw = el.value;
+      if (el.type === 'password' && !raw) continue; // 敏感项留空表示不修改
+      if (key.indexOf('rateLimit.') === 0) {
+        if (!rate) rate = {};
+        var field = key.slice('rateLimit.'.length);
+        var num = Number(raw);
+        rate[field] = field === 'windowMs' ? num * 1000 : num;
+        continue;
+      }
+      if (el.type === 'number') {
+        changes[key] = Number(raw);
+        continue;
+      }
+      if (key === 'blockExtensions') {
+        changes[key] = raw;
+        continue;
+      }
+      changes[key] = raw;
+    }
+    if (rate) changes.rateLimit = rate;
+    return changes;
+  }
+
+  /** 保存设置 */
+  function saveSettings() {
+    var changes = collectSettingChanges();
+    if (!Object.keys(changes).length) {
+      toast('没有需要保存的修改', 'err');
+      return;
+    }
+    var payload = { changes: changes };
+    if ('password' in changes || 'visitorPassword' in changes) {
+      var pwd = $('settingsCurrentPwd').value;
+      if (!pwd) {
+        toast('修改口令需要填写当前管理员口令', 'err');
+        return;
+      }
+      payload.currentPassword = pwd;
+    }
+    apiFetch(API + '/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) { toast(json.msg || '保存失败', 'err'); return; }
+        toast('设置已保存并生效', 'ok');
+        $('settingsCurrentPwd').value = '';
+        // 令牌变了：更新本地的令牌与访问链接，旧的扫码链接随即失效
+        if ('token' in changes) {
+          KEY = String(changes.token || '');
+          pageUrl = location.origin + location.pathname + (KEY ? '?key=' + encodeURIComponent(KEY) : '');
+          toast(KEY ? '访问令牌已更新，旧链接已失效，请分享新的链接' : '访问令牌已停用，访问不再需要密钥', 'ok');
+        }
+        openSettings();
+      })
+      .catch(function () { toast('保存失败', 'err'); });
+  }
+
+  /** 恢复某一项的默认值 */
+  function resetSetting(key) {
+    apiFetch(API + '/settings/' + encodeURIComponent(key), { method: 'DELETE' })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) { toast(json.msg || '恢复失败', 'err'); return; }
+        toast('已恢复默认设置', 'ok');
+        openSettings();
+      })
+      .catch(function () { toast('恢复失败', 'err'); });
+  }
+
+  /** 事件绑定
+   * 登录与退出
+   */
   $('loginBtn').addEventListener('click', function () { openLoginModal(''); });
   $('logoutBtn').addEventListener('click', logout);
   $('loginCancel').addEventListener('click', closeLoginModal);
@@ -2469,6 +2687,32 @@
   $('loginModal').addEventListener('click', function (e) { if (e.target === $('loginModal')) closeLoginModal(); });
   $('loginPassword').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') submitLogin();
+  });
+
+  // 设置面板
+  $('settingsBtn').addEventListener('click', openSettings);
+  $('settingsClose').addEventListener('click', function () { $('settingsModal').classList.add('hidden'); });
+  $('settingsModal').addEventListener('click', function (e) { if (e.target === $('settingsModal')) $('settingsModal').classList.add('hidden'); });
+  $('settingsSave').addEventListener('click', saveSettings);
+  $('settingsCopyLink').addEventListener('click', function () { copyText(pageUrl); });
+  // 记录哪些输入框被改过，只提交改动过的项
+  $('settingsBody').addEventListener('input', function (e) {
+    var el = e.target;
+    if (el && el.dataset && el.dataset.key) el.dataset.touched = '1';
+  });
+  // 恢复默认 / 清除某一项
+  $('settingsBody').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-reset], button[data-clear]');
+    if (!btn) return;
+    if (btn.dataset.reset) {
+      if (!window.confirm('确定恢复该项的默认值？')) return;
+      resetSetting(btn.dataset.reset);
+      return;
+    }
+    if (btn.dataset.clear) {
+      if (!window.confirm('确定停用该项？停用后该项将回到配置文件的取值。')) return;
+      resetSetting(btn.dataset.clear);
+    }
   });
 
   // 页面任意处直接粘贴（Ctrl+V）即可分享文本或截图
