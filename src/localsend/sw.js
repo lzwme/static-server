@@ -6,14 +6,15 @@
  *
  * 策略：
  *  - 页面导航：优先走网络，失败时回退到缓存的外壳
- *  - 静态资源：缓存优先，命中即返回，同时后台更新
+ *  - 脚本与样式：网络优先（局域网内几乎瞬时可达），保证服务端升级后立即生效
+ *  - 其它静态资源：缓存优先并后台更新
  *  - 接口请求（/localsend/api/）：一律走网络，绝不缓存，避免出现过期文件列表
  *
  * 注意：Service Worker 只在安全上下文可用（https 或 localhost），
  * 通过局域网 IP 的 http 访问时不会注册，这是浏览器的安全限制。
  */
 
-const CACHE_NAME = 'localsend-shell-v1';
+const CACHE_NAME = 'localsend-shell-v2';
 
 /** 需要预缓存的外壳文件（相对 Service Worker 所在目录） */
 const SHELL_FILES = [
@@ -62,8 +63,30 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(handleNavigate(req));
     return;
   }
+  // 页面脚本与样式在局域网内几乎瞬时可达，改为网络优先，
+  // 避免服务端升级后仍使用旧版本；离线时再回退到缓存
+  if (/\.(js|css)$/.test(url.pathname)) {
+    event.respondWith(networkFirst(req));
+    return;
+  }
   event.respondWith(cacheFirst(req));
 });
+
+/** 网络优先：拿到新内容就更新缓存，失败时回退缓存 */
+async function networkFirst(req) {
+  try {
+    const fresh = await fetch(req);
+    if (fresh && fresh.ok) {
+      const cache = await caches.open(CACHE_NAME);
+      cache.put(req, fresh.clone());
+    }
+    return fresh;
+  } catch {
+    const cached = await caches.match(req);
+    if (cached) return cached;
+    throw new Error('离线且没有缓存');
+  }
+}
 
 /** 页面导航：网络优先，失败回退缓存 */
 async function handleNavigate(req) {
