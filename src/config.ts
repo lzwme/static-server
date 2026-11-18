@@ -30,6 +30,8 @@ export interface LocalSendConfig {
   autoCleanDays?: number;
   /** 自动清理：存储目录容量上限（字节），超出后自动删除最旧的文件 */
   autoCleanMaxSize?: number;
+  /** 回收站保留天数。删除的文件在保留期内可还原，默认 1 天 */
+  trashDays?: number;
   /** 是否开启 WebDAV 挂载接口（/localsend/dav），可把存储目录挂载为网络盘。默认开启 */
   webdav?: boolean;
 }

@@ -15,7 +15,7 @@ const MAX_DEPTH = 16;
  * 内部目录名（位于存储目录下，但不参与文件列表、WebDAV 目录浏览与自动清理）。
  * 用于存放分片上传的临时分片等内部数据。
  */
-export const INTERNAL_DIR_NAMES = ['.chunks'];
+export const INTERNAL_DIR_NAMES = ['.chunks', '.trash'];
 
 /** 判断目录名是否为内部目录 */
 export function isInternalDirName(name: string): boolean {

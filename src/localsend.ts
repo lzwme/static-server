@@ -24,6 +24,7 @@ import { createGuard } from './lib/localsend-guard';
 import { resolveInDir, safeRelPath } from './lib/localsend-path';
 import { createShareStore } from './lib/localsend-share';
 import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
+import { createTrash } from './lib/localsend-trash';
 import { createWebDavHandler } from './lib/localsend-webdav';
 import { getIp } from './lib/utils';
 import { createZipChunks, type ZipEntry } from './lib/zip';
@@ -193,6 +194,12 @@ export async function initLocalsend(app: Express): Promise<void> {
     token: ls.token,
     maxConcurrent: ls.maxConcurrent,
     rateLimit: ls.rateLimit,
+  });
+
+  // 回收站：删除的文件先移入此处，可在一段时间内还原
+  const trash = createTrash({
+    dir,
+    ttl: (ls.trashDays ?? 1) * 24 * 60 * 60 * 1000,
   });
 
   // 自动清理：避免接收端长期运行把磁盘撑满
@@ -601,14 +608,49 @@ export async function initLocalsend(app: Express): Promise<void> {
     });
   });
 
-  // 删除
+  // 删除（移入回收站，可还原）
   app.delete('/localsend/api/delete/*name', (req: Request, res: Response) => {
     const rel = relParam(req);
     if (!rel) return void res.status(400).json({ code: 1, msg: '非法的文件路径' });
     const filePath = resolveInDir(dir, rel);
     if (!filePath || !existsSync(filePath)) return void res.status(404).json({ code: 1, msg: '文件不存在' });
-    rmSync(filePath);
-    res.json({ code: 0 });
+    const entry = trash.add(rel);
+    if (!entry) {
+      // 移入回收站失败时退化为直接删除
+      try {
+        rmSync(filePath);
+      } catch {
+        return void res.status(500).json({ code: 1, msg: '删除失败' });
+      }
+      return void res.json({ code: 0, data: { trashed: false } });
+    }
+    res.json({ code: 0, data: { trashed: true, id: entry.id, name: entry.name } });
+  });
+
+  // 回收站：列出条目
+  app.get('/localsend/api/trash', (_req: Request, res: Response) => {
+    res.json({ code: 0, data: trash.list() });
+  });
+
+  // 回收站：还原
+  app.post('/localsend/api/trash/:id/restore', (req: Request, res: Response) => {
+    const id = String(req.params.id || '');
+    const restored = trash.restore(id);
+    if (!restored) return void res.status(404).json({ code: 1, msg: '回收站条目不存在或已过期' });
+    res.json({ code: 0, data: { name: restored } });
+  });
+
+  // 回收站：彻底删除
+  app.delete('/localsend/api/trash/:id', (req: Request, res: Response) => {
+    const id = String(req.params.id || '');
+    const ok = trash.remove(id);
+    res.json({ code: ok ? 0 : 1, msg: ok ? '' : '回收站条目不存在' });
+  });
+
+  // 回收站：清空
+  app.delete('/localsend/api/trash', (_req: Request, res: Response) => {
+    const count = trash.empty();
+    res.json({ code: 0, data: { removed: count } });
   });
 
   // 批量打包下载：把多个文件流式打成 zip（不落盘、不占额外磁盘）
@@ -659,7 +701,8 @@ export async function initLocalsend(app: Express): Promise<void> {
           continue;
         }
         try {
-          rmSync(filePath);
+          // 优先移入回收站，失败时退化为直接删除
+          if (!trash.add(rel)) rmSync(filePath);
           deleted.push(rel);
         } catch (err) {
           logger.error('[localsend 删除]', err);
