@@ -42,6 +42,14 @@ function clientIp(req: Request): string {
   return ip || req.ip || req.socket.remoteAddress || 'unknown';
 }
 
+/**
+ * 静态资源（样式、脚本、图标、清单等）不包含任何用户数据，
+ * 且页面里的 <link>/<script> 标签无法携带令牌，
+ * 因此这些请求放行，避免启用令牌后页面丢失样式与脚本。
+ * 文件列表、上传、下载等接口仍然需要校验令牌。
+ */
+const STATIC_ASSET_RE = /\.(css|js|mjs|json|webmanifest|map|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|otf)$/i;
+
 export function createGuard(options: GuardOptions = {}): Guard {
   const token = options.token || '';
   const maxConcurrent = options.maxConcurrent ?? 3;
@@ -69,6 +77,8 @@ export function createGuard(options: GuardOptions = {}): Guard {
 
   const requireToken: Guard['requireToken'] = (req, res, next) => {
     if (!token) return next();
+    // 静态资源无需令牌（接口路径除外，避免以 .css 等后缀绕过校验）
+    if (!req.path.startsWith('/api/') && STATIC_ASSET_RE.test(req.path)) return next();
     const key = String(req.query.key || req.get('X-Localsend-Key') || '');
     if (key && safeEqual(key, token)) return next();
 
