@@ -259,6 +259,33 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   });
 
   // ---------------------------------------------------------------------------
+  // 访问控制
+  //
+  // 注册顺序很关键：
+  //  1. 分享下载页与 WebDAV 必须放在令牌校验之前
+  //     —— 分享链接本就是免登录的，WebDAV 走 Basic Auth 带不了 ?key=
+  //  2. 令牌校验之后才是全部接口，任何接口都不能绕过
+  // ---------------------------------------------------------------------------
+  // WebDAV 挂载接口：把存储目录暴露为网络盘（资源管理器 / iOS 文件 App 均可挂载）。
+  if (ls.webdav !== false) {
+    const davHandler = createWebDavHandler({
+      dir,
+      token: ls.token,
+      maxSize,
+      maxTotalSize,
+      blockExtensions: ls.blockExtensions ?? DEFAULT_BLOCK_EXTENSIONS,
+      basePath: '/localsend/dav',
+    });
+    app.use('/localsend/dav', davHandler);
+    logger.log(color.green('LocalSend DAV : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend/dav`));
+  }
+
+  // 访问令牌校验（配置了 token 才生效），覆盖页面与所有接口
+  app.use('/localsend', guard.requireToken);
+  // 接口频率限制
+  app.use('/localsend/api', guard.rateLimit);
+
+  // ---------------------------------------------------------------------------
   // 剪贴板内容落盘
   //
   // 分享只能分享「已经存在于存储目录里的文件」，
@@ -357,26 +384,6 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     const ok = shareStore.revoke(String(req.params.token || ''));
     res.json({ code: ok ? 0 : 1, msg: ok ? '' : '分享不存在' });
   });
-
-  // WebDAV 挂载接口：把存储目录暴露为网络盘（资源管理器 / iOS 文件 App 均可挂载）。
-  // 必须注册在令牌校验之前：WebDAV 客户端使用 Basic Auth，无法携带 ?key= 查询参数。
-  if (ls.webdav !== false) {
-    const davHandler = createWebDavHandler({
-      dir,
-      token: ls.token,
-      maxSize,
-      maxTotalSize,
-      blockExtensions: ls.blockExtensions ?? DEFAULT_BLOCK_EXTENSIONS,
-      basePath: '/localsend/dav',
-    });
-    app.use('/localsend/dav', davHandler);
-    logger.log(color.green('LocalSend DAV : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend/dav`));
-  }
-
-  // 访问令牌校验（配置了 token 才生效），覆盖页面与所有接口
-  app.use('/localsend', guard.requireToken);
-  // 接口频率限制
-  app.use('/localsend/api', guard.rateLimit);
 
   // 页面：初始化时读入独立 html 单文件
   const pageHtml = readFileSync(resolve(__dirname, PAGE_REL_PATH), 'utf8');
