@@ -307,18 +307,50 @@
     xhr.send(fd);
   }
 
-  function downloadFile(name) {
+  // 下载策略：文件大于 BLOB_LIMIT 时直接交给浏览器原生下载（流式写盘，不占用浏览器内存，
+  // 避免大文件把内存撑爆导致下载失败）；小文件用 XHR 读成 blob，以便显示实时进度与速度
+  var BLOB_LIMIT = 50 * 1024 * 1024; // 50MB
+
+  function fileSizeOf(name) {
+    for (var i = 0; i < fileItems.length; i++) {
+      if (fileItems[i].name === name) return fileItems[i].size || 0;
+    }
+    return 0;
+  }
+
+  // 原生下载：由浏览器直接下载 URL，不经过 XHR，内存占用恒定
+  function nativeDownload(name) {
+    var a = document.createElement('a');
+    a.href = API + '/download/' + encodeURIComponent(name);
+    a.download = name;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { a.remove(); }, 0);
+  }
+
+  // 小文件下载：XHR + blob，可显示进度
+  function xhrDownload(name, onDone) {
     var url = API + '/download/' + encodeURIComponent(name);
     var xhr = new XMLHttpRequest();
     xhr.open('GET', url);
     xhr.responseType = 'blob';
+    var lastLoaded = 0;
+    var lastTime = Date.now();
     xhr.onprogress = function (e) {
-      if (e.lengthComputable && e.total) {
-        toast('下载中 ' + name + ' ' + Math.round(e.loaded / e.total * 100) + '%');
+      if (!e.lengthComputable || !e.total) return;
+      var pct = Math.round(e.loaded / e.total * 100);
+      var now = Date.now();
+      var dt = (now - lastTime) / 1000;
+      if (dt > 0.3) {
+        var speed = fmtSize((e.loaded - lastLoaded) / dt) + '/s';
+        lastLoaded = e.loaded;
+        lastTime = now;
+        toast('下载中 ' + name + ' ' + pct + '% · ' + speed);
       }
     };
     xhr.onload = function () {
-      if (xhr.status !== 200) { toast('下载失败：' + name, 'err'); return; }
+      if (xhr.status !== 200) { toast('下载失败：' + name, 'err'); if (onDone) onDone(false); return; }
       var blob = xhr.response;
       var a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -327,9 +359,20 @@
       a.click();
       setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
       toast('下载完成：' + name, 'ok');
+      if (onDone) onDone(true);
     };
-    xhr.onerror = function () { toast('下载失败：' + name, 'err'); };
+    xhr.onerror = function () { toast('下载失败：' + name, 'err'); if (onDone) onDone(false); };
     xhr.send();
+  }
+
+  function downloadFile(name) {
+    var size = fileSizeOf(name);
+    if (size > BLOB_LIMIT) {
+      nativeDownload(name);
+      toast('已转交浏览器下载：' + name + '（' + fmtSize(size) + '）', 'ok');
+      return;
+    }
+    xhrDownload(name);
   }
 
   var imgExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'];
@@ -441,11 +484,19 @@
     if (!names.length) return;
     toast('开始批量下载 ' + names.length + ' 个文件');
     var i = 0;
+    // 严格串行：上一个文件下载完成（或原生下载已发起）后再下载下一个，
+    // 避免多个 blob 同时驻留内存导致大文件批量下载失败
     function next() {
       if (i >= names.length) { toast('批量下载完成（共 ' + names.length + ' 个）', 'ok'); return; }
-      downloadFile(names[i]);
+      var name = names[i];
       i += 1;
-      setTimeout(next, 800);
+      if (fileSizeOf(name) > BLOB_LIMIT) {
+        nativeDownload(name);
+        // 间隔发起，避免浏览器把连续下载判定为批量自动下载而拦截
+        setTimeout(next, 1500);
+        return;
+      }
+      xhrDownload(name, function () { setTimeout(next, 300); });
     }
     next();
   });
