@@ -16,8 +16,8 @@ import { join } from 'node:path';
 export interface TrashOptions {
   /** 存储目录 */
   dir: string;
-  /** 回收站保留时长（毫秒），默认 24 小时 */
-  ttl?: number;
+  /** 回收站保留时长（毫秒），默认 24 小时。传入函数表示运行时取值 */
+  ttl?: number | (() => number);
   /** 清理检查间隔（毫秒），默认 1 小时 */
   intervalMs?: number;
 }
@@ -60,7 +60,11 @@ const ENTRY_PREFIX = 'item-';
 
 export function createTrash(options: TrashOptions): Trash {
   const { dir } = options;
-  const ttl = options.ttl ?? 24 * 60 * 60 * 1000;
+  /** 运行时读取当前生效的保留时长 */
+  const getTtl = (): number => {
+    const value = typeof options.ttl === 'function' ? options.ttl() : options.ttl;
+    return value ?? 24 * 60 * 60 * 1000;
+  };
   const intervalMs = options.intervalMs ?? 60 * 60 * 1000;
   const trashDir = join(dir, TRASH_DIR_NAME);
 
@@ -163,12 +167,13 @@ export function createTrash(options: TrashOptions): Trash {
         size = 0;
       }
       const id = `${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
+      const now = Date.now();
       const entry: TrashEntry = {
         id,
         name: relPath,
         size,
-        deletedAt: Date.now(),
-        expiresAt: Date.now() + ttl,
+        deletedAt: now,
+        expiresAt: now + getTtl(),
       };
       try {
         // 移动到回收站；若跨设备失败则退化为复制

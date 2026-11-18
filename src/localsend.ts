@@ -19,7 +19,7 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 import { color } from 'console-log-colors';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
-import { getConfig } from './config';
+import { getConfig, type LocalSendConfig } from './config';
 import { logger } from './get-logger';
 import { canManage, canWrite, createAuth } from './lib/localsend-auth';
 import { createListCache } from './lib/localsend-cache';
@@ -30,6 +30,7 @@ import { batchRename, moveFiles, parseRenameRule, renameFile, uniqueName } from 
 import { buildPasteName, contentHash, parsePaste, parseStrategy, timeStampTag } from './lib/localsend-paste';
 import { resolveInDir, safeRelPath } from './lib/localsend-path';
 import { collectDirs, collectExts, filterEntries, paginate, parseListQuery, ROOT_DIR, sortEntries } from './lib/localsend-query';
+import { createSettingsStore, normalizeSetting, SETTING_DEFS, type SettingKey } from './lib/localsend-settings';
 import { createShareStore, shareInlineMime, shareInlineType } from './lib/localsend-share';
 import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
 import { createTrash } from './lib/localsend-trash';
@@ -178,44 +179,71 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   if (!ls.enabled) return { stop: () => {} };
 
   const dir = ls.dir || '';
-  const maxSize = ls.maxSize || 1024 * 1024 * 1024;
-  const maxTotalSize = ls.maxTotalSize || 0;
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  // ---------------------------------------------------------------------------
+  // 运行时设置
+  //
+  // 配置文件的值是「出厂设置」，管理员在网页端改过的值单独存一份，
+  // 启动时合并进来并立即生效，无需重启服务。
+  // ---------------------------------------------------------------------------
+  const settings = createSettingsStore();
+  settings.load();
+  const merged = settings.apply(ls as unknown as Record<string, unknown>) as unknown as LocalSendConfig;
+
+  /** 当前生效的配置，管理员修改后直接改这里，各处读取时随之更新 */
+  const live = {
+    token: String(merged.token || ''),
+    password: String(merged.password || ''),
+    visitorPassword: String(merged.visitorPassword || ''),
+    sessionTtl: Number(merged.sessionTtl) || 24 * 60 * 60 * 1000,
+    // 未设置时默认 1GB；显式设为 0 表示不限制
+    maxSize: merged.maxSize === undefined ? 1024 * 1024 * 1024 : Number(merged.maxSize),
+    maxTotalSize: Number(merged.maxTotalSize) || 0,
+    maxConcurrent: Number(merged.maxConcurrent ?? 3),
+    rateLimit: {
+      windowMs: Number(merged.rateLimit?.windowMs) || 60_000,
+      max: Number(merged.rateLimit?.max ?? 120),
+    },
+    blockExtensions: [...(merged.blockExtensions || DEFAULT_BLOCK_EXTENSIONS)],
+    trashDays: Number(merged.trashDays ?? 1),
+    autoCleanDays: Number(merged.autoCleanDays) || 0,
+    autoCleanMaxSize: Number(merged.autoCleanMaxSize) || 0,
+  };
 
   // 访问防护：令牌 / 频率限制 / 并发限制
   const guard = createGuard({
-    token: ls.token,
-    maxConcurrent: ls.maxConcurrent,
-    rateLimit: ls.rateLimit,
+    token: () => live.token,
+    maxConcurrent: () => live.maxConcurrent,
+    rateLimit: () => live.rateLimit,
   });
 
   // 回收站：删除的文件先移入此处，可在一段时间内还原
   const trash = createTrash({
     dir,
-    ttl: (ls.trashDays ?? 1) * 24 * 60 * 60 * 1000,
+    ttl: () => live.trashDays * 24 * 60 * 60 * 1000,
   });
 
   // 自动清理：避免接收端长期运行把磁盘撑满
-  if (ls.autoCleanDays || ls.autoCleanMaxSize) {
-    const cleaner = createCleaner({
-      dir,
-      maxAgeDays: ls.autoCleanDays,
-      maxTotalSize: ls.autoCleanMaxSize,
-      onRemoved: (names) =>
-        logger.log(color.yellow('LocalSend 清理 : '.padStart(15, ' ')), color.yellowBright(`已删除 ${names.length} 个过期文件`)),
-    });
-    // 启动时先清理一次
-    setTimeout(() => cleaner.run(), 5000).unref?.();
-  }
+  // 始终创建，以便管理员在网页端随时开启或调整清理策略
+  const cleaner = createCleaner({
+    dir,
+    maxAgeDays: () => live.autoCleanDays,
+    maxTotalSize: () => live.autoCleanMaxSize,
+    onRemoved: (names) =>
+      logger.log(color.yellow('LocalSend 清理 : '.padStart(15, ' ')), color.yellowBright(`已删除 ${names.length} 个过期文件`)),
+  });
+  // 启动时先清理一次
+  setTimeout(() => cleaner.run(), 5000).unref?.();
 
   const port = config.port || 80;
   const ipUrl = `http://${getIp() || 'localhost'}:${port}`;
   // 配置了令牌时，把令牌带上，方便直接扫码访问
-  const keyQuery = ls.token ? `?key=${encodeURIComponent(ls.token)}` : '';
+  const keyQuery = live.token ? `?key=${encodeURIComponent(live.token)}` : '';
   logger.log(color.green('LocalSend : '.padStart(15, ' ')), color.greenBright('局域网文件传输功能已开启'));
   logger.log(color.green('LocalSend DIR : '.padStart(15, ' ')), color.cyanBright(dir));
   logger.log(color.green('LocalSend URL : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend${keyQuery}`));
-  if (ls.token) logger.log(color.green('LocalSend KEY : '.padStart(15, ' ')), color.yellowBright('已启用访问令牌'));
+  if (live.token) logger.log(color.green('LocalSend KEY : '.padStart(15, ' ')), color.yellowBright('已启用访问令牌'));
 
   // 分享链接：拿到链接的人无需访问令牌即可下载指定文件（需在令牌校验之前注册）
   const shareStore = createShareStore();
@@ -272,10 +300,10 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   if (ls.webdav !== false) {
     const davHandler = createWebDavHandler({
       dir,
-      token: ls.token,
-      maxSize,
-      maxTotalSize,
-      blockExtensions: ls.blockExtensions ?? DEFAULT_BLOCK_EXTENSIONS,
+      token: () => live.token,
+      maxSize: () => live.maxSize,
+      maxTotalSize: () => live.maxTotalSize,
+      blockExtensions: () => live.blockExtensions,
       basePath: '/localsend/dav',
     });
     app.use('/localsend/dav', davHandler);
@@ -295,16 +323,16 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   // 没有配置任何口令时保持开放模式，行为与以前完全一致。
   // ---------------------------------------------------------------------------
   const auth = createAuth({
-    password: ls.password,
-    visitorPassword: ls.visitorPassword,
-    sessionTtl: ls.sessionTtl,
+    password: live.password,
+    visitorPassword: live.visitorPassword,
+    sessionTtl: live.sessionTtl,
   });
   if (auth.open) {
     logger.log(color.yellow('LocalSend 权限 :'.padStart(15, ' ')), color.yellow('未设置口令，任何人都可以删除与整理文件'));
   } else {
     logger.log(color.green('LocalSend 权限 :'.padStart(15, ' ')), color.cyanBright('已启用身份分级（危险操作需要管理员口令）'));
   }
-  if (ls.visitorPassword && !auth.hasAdmin) {
+  if (live.visitorPassword && !auth.hasAdmin) {
     logger.log(color.yellow('LocalSend 权限 :'.padStart(15, ' ')), color.yellow('只配置了访客口令，删除与整理将无法执行'));
   }
 
@@ -356,10 +384,151 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
         role: res.locals.role,
         open: auth.open,
         hasAdmin: auth.hasAdmin,
-        hasVisitor: !!ls.visitorPassword,
+        hasVisitor: !!live.visitorPassword,
         expiresAt: session?.expiresAt ?? 0,
       },
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 设置管理
+  //
+  // 管理员在网页端即可修改口令、令牌与各项限制，改完立即生效，无需重启服务。
+  // 配置文件的值是「出厂设置」，运行时改动单独存一份，
+  // 若之后用户又改了配置文件里的同一项，则以配置文件为准。
+  // ---------------------------------------------------------------------------
+
+  /** 敏感值脱敏：只露出开头几位，避免接口泄露完整口令 */
+  function maskValue(text: string): string {
+    if (!text) return '';
+    if (text.length <= 4) return '****';
+    return `${text.slice(0, 4)}****`;
+  }
+
+  /** 组装当前生效的设置项 */
+  function buildSettingsPayload() {
+    const items = (Object.keys(SETTING_DEFS) as SettingKey[]).map((key) => {
+      const def = SETTING_DEFS[key];
+      const value = live[key];
+      const empty = value === undefined || value === null || value === '' || (Array.isArray(value) && !value.length);
+      const item: Record<string, unknown> = {
+        key,
+        label: def.label,
+        kind: def.kind,
+        unit: def.unit || '',
+        desc: def.desc,
+        secret: !!def.secret,
+        source: settings.source(key),
+        set: !empty,
+      };
+      if (def.secret) item.masked = maskValue(String(value || ''));
+      else item.value = value;
+      return item;
+    });
+    return {
+      items,
+      // 这两项与路由注册、存储路径有关，改动需要重启服务
+      restartRequired: [
+        { key: 'dir', label: '文件存储目录', value: dir },
+        { key: 'webdav', label: 'WebDAV 网络盘', value: ls.webdav !== false },
+      ],
+      file: settings.file,
+    };
+  }
+
+  /** 把一项设置应用到运行时；口令类改动同时让旧会话失效（当前会话保留） */
+  function applySetting(key: SettingKey, value: unknown, req: Request) {
+    switch (key) {
+      case 'token':
+        live.token = String(value || '');
+        break;
+      case 'password':
+        live.password = String(value || '');
+        break;
+      case 'visitorPassword':
+        live.visitorPassword = String(value || '');
+        break;
+      case 'sessionTtl':
+        live.sessionTtl = Number(value) || live.sessionTtl;
+        break;
+      case 'maxSize':
+        live.maxSize = Number(value) || 0;
+        break;
+      case 'maxTotalSize':
+        live.maxTotalSize = Number(value) || 0;
+        break;
+      case 'maxConcurrent':
+        live.maxConcurrent = Number(value) || 0;
+        break;
+      case 'rateLimit':
+        live.rateLimit = (value || { windowMs: 60_000, max: 120 }) as { windowMs: number; max: number };
+        break;
+      case 'blockExtensions':
+        live.blockExtensions = [...((value as string[]) || [])];
+        break;
+      case 'trashDays':
+        live.trashDays = Number(value) || 0;
+        break;
+      case 'autoCleanDays':
+        live.autoCleanDays = Number(value) || 0;
+        break;
+      case 'autoCleanMaxSize':
+        live.autoCleanMaxSize = Number(value) || 0;
+        break;
+      default:
+        break;
+    }
+    // 口令变更后，此前的会话全部失效，当前会话保留（避免改完口令自己被踢下线）
+    if (key === 'password' || key === 'visitorPassword' || key === 'sessionTtl') {
+      auth.update({ password: live.password, visitorPassword: live.visitorPassword, sessionTtl: live.sessionTtl }, sessionTokenOf(req));
+    }
+  }
+
+  // 查看设置（仅管理员）
+  app.get('/localsend/api/settings', requireAdmin, (_req: Request, res: Response) => {
+    res.json({ code: 0, data: buildSettingsPayload() });
+  });
+
+  // 修改设置（仅管理员）
+  app.post('/localsend/api/settings', requireAdmin, express.json({ limit: '64kb' }), (req: Request, res: Response) => {
+    const changes = req.body?.changes;
+    if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
+      return void res.status(400).json({ code: 1, msg: '缺少要修改的配置项' });
+    }
+    const keys = Object.keys(changes) as SettingKey[];
+    for (const key of keys) {
+      if (!(key in SETTING_DEFS)) return void res.status(400).json({ code: 1, msg: `未知的配置项：${key}` });
+    }
+    // 改口令需要再次验证当前管理员口令，防止会话被劫持后改掉口令
+    if ((keys.includes('password') || keys.includes('visitorPassword')) && !auth.verifyAdmin(req.body?.currentPassword)) {
+      return void res.status(403).json({ code: 1, msg: '当前管理员口令不正确', needAuth: true });
+    }
+    // 先全部校验通过再逐项生效，避免出现「改了一半」
+    const normalized: { key: SettingKey; value: unknown }[] = [];
+    for (const key of keys) {
+      const { value, error } = normalizeSetting(key, changes[key]);
+      if (error) return void res.status(400).json({ code: 1, msg: error });
+      normalized.push({ key, value });
+    }
+    for (const item of normalized) {
+      // 记录配置文件里的原值作为基准：之后若用户改了配置文件，以配置文件为准
+      settings.set(item.key, item.value, (ls as unknown as Record<string, unknown>)[item.key]);
+      applySetting(item.key, item.value, req);
+    }
+    logger.log(color.green('LocalSend 设置 :'.padStart(15, ' ')), color.cyanBright(`已更新：${normalized.map((i) => i.key).join('、')}`));
+    res.json({ code: 0, data: { applied: normalized.map((i) => i.key), ...buildSettingsPayload() } });
+  });
+
+  // 恢复某项设置为配置文件里的值
+  app.delete('/localsend/api/settings/:key', requireAdmin, (req: Request, res: Response) => {
+    const key = String(req.params.key || '') as SettingKey;
+    if (!(key in SETTING_DEFS)) return void res.status(400).json({ code: 1, msg: '未知的配置项' });
+    settings.clear(key);
+    const baseValue = (ls as unknown as Record<string, unknown>)[key];
+    const { value } = normalizeSetting(key, baseValue ?? '');
+    applySetting(key, value, req);
+    logger.log(color.green('LocalSend 设置 :'.padStart(15, ' ')), color.cyanBright(`已恢复默认：${key}`));
+    res.json({ code: 0, data: { applied: [key], ...buildSettingsPayload() } });
   });
 
   // ---------------------------------------------------------------------------
@@ -374,16 +543,16 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     if (parsed.error) return void res.status(400).json({ code: 1, msg: parsed.error });
 
     // 单个文件的体积限制，与上传保持一致
-    if (maxSize && parsed.buffer.length > maxSize) {
-      return void res.status(413).json({ code: 1, msg: `内容超出大小限制（${(maxSize / 1024 / 1024).toFixed(0)}MB）` });
+    if (live.maxSize && parsed.buffer.length > live.maxSize) {
+      return void res.status(413).json({ code: 1, msg: `内容超出大小限制（${(live.maxSize / 1024 / 1024).toFixed(0)}MB）` });
     }
     // 总容量预检
-    if (maxTotalSize) {
+    if (live.maxTotalSize) {
       const used = dirSize(dir);
-      if (used + parsed.buffer.length > maxTotalSize) {
+      if (used + parsed.buffer.length > live.maxTotalSize) {
         return void res.status(413).json({
           code: 1,
-          msg: `存储空间不足：已用 ${(used / 1024 / 1024).toFixed(1)}MB / ${(maxTotalSize / 1024 / 1024).toFixed(1)}MB`,
+          msg: `存储空间不足：已用 ${(used / 1024 / 1024).toFixed(1)}MB / ${(live.maxTotalSize / 1024 / 1024).toFixed(1)}MB`,
         });
       }
     }
@@ -564,7 +733,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   });
 
   // 多文件上传
-  const blockExts = new Set((ls.blockExtensions ?? DEFAULT_BLOCK_EXTENSIONS).map((e) => (e.startsWith('.') ? e : `.${e}`).toLowerCase()));
+  /** 运行时读取当前生效的禁止扩展名 */
+  const getBlockExts = (): Set<string> => new Set(live.blockExtensions.map((e) => (e.startsWith('.') ? e : `.${e}`).toLowerCase()));
   // 记录每个请求产生的临时文件，便于请求结束（含客户端中断）后清理残留
   const tempFiles = new WeakMap<Request, Set<string>>();
   const upload = multer({
@@ -578,7 +748,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
         cb(null, fileName);
       },
     }),
-    limits: { fileSize: maxSize, files: 200 },
+    limits: { fileSize: live.maxSize, files: 200 },
     // 保留上传文件名的完整相对路径（上传文件夹时可保留目录结构）
     preservePath: true,
     // 显式声明按 latin1 读取 Content-Disposition 参数，保留文件名的原始字节，
@@ -587,7 +757,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     // 拦截可执行脚本，避免上传目录与静态服务根目录重叠时形成远程代码执行入口
     fileFilter: (_req, file, cb) => {
       const ext = extname(decodeUploadName(file.originalname)).toLowerCase();
-      if (ext && blockExts.has(ext)) {
+      if (ext && getBlockExts().has(ext)) {
         cb(new LocalsendError(`出于安全考虑，禁止上传 ${ext} 类型的文件`, 403));
         return;
       }
@@ -602,18 +772,18 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     guard.limitConcurrent,
     // 总容量预检：目录已用容量与本次请求体大小共同判断，超出配额直接拒绝
     (req: Request, res: Response, next) => {
-      if (!maxTotalSize) return next();
+      if (!live.maxTotalSize) return next();
       const used = dirSize(dir);
-      if (used >= maxTotalSize) {
+      if (used >= live.maxTotalSize) {
         res.status(413).json({
           code: 1,
-          msg: `存储空间已满：${(used / 1024 / 1024).toFixed(1)}MB / ${(maxTotalSize / 1024 / 1024).toFixed(1)}MB`,
+          msg: `存储空间已满：${(used / 1024 / 1024).toFixed(1)}MB / ${(live.maxTotalSize / 1024 / 1024).toFixed(1)}MB`,
         });
         return;
       }
       // multipart 请求体的 Content-Length 包含少量协议开销，作为保守估计
       const need = Number(req.get('Content-Length') || 0);
-      if (need > 0 && used + need > maxTotalSize) {
+      if (need > 0 && used + need > live.maxTotalSize) {
         res.status(413).json({
           code: 1,
           msg: `剩余容量不足：已用 ${(used / 1024 / 1024).toFixed(1)}MB，本次需要约 ${(need / 1024 / 1024).toFixed(1)}MB`,
@@ -661,7 +831,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       }
 
       // 容量复核：写入后若超出总配额，撤销本次写入并提示
-      if (maxTotalSize && dirSize(dir) > maxTotalSize) {
+      if (live.maxTotalSize && dirSize(dir) > live.maxTotalSize) {
         for (const r of results) {
           try {
             rmSync(join(dir, r.name));
@@ -687,14 +857,14 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   const chunkStore = createChunkStore({
     dir,
     tmpDir: chunkTmpDir,
-    maxSize,
+    maxSize: () => live.maxSize,
     ttl: 24 * 60 * 60 * 1000,
   });
 
   /** 分片上传同样禁止服务端脚本类型 */
   const chunkBlockExt = (name: string): boolean => {
     const ext = extname(name).toLowerCase();
-    return !!ext && blockExts.has(ext);
+    return !!ext && getBlockExts().has(ext);
   };
 
   // 初始化上传任务
@@ -707,8 +877,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     }
     const size = Number(req.body?.size) || 0;
     if (size < 0) return void res.status(400).json({ code: 1, msg: '非法的文件大小' });
-    if (maxSize && size > maxSize) {
-      return void res.status(413).json({ code: 1, msg: `文件超出大小限制（${(maxSize / 1024 / 1024).toFixed(0)}MB）` });
+    if (live.maxSize && size > live.maxSize) {
+      return void res.status(413).json({ code: 1, msg: `文件超出大小限制（${(live.maxSize / 1024 / 1024).toFixed(0)}MB）` });
     }
     const chunkSize = chunkStore.clampChunkSize(req.body?.chunkSize);
     const result = chunkStore.init(rel, size, chunkSize);
@@ -774,12 +944,12 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     if (!meta) return void res.status(404).json({ code: 1, msg: '上传任务不存在或已过期' });
 
     // 合并前复核总配额
-    if (maxTotalSize) {
+    if (live.maxTotalSize) {
       const used = dirSize(dir);
-      if (used + meta.size > maxTotalSize) {
+      if (used + meta.size > live.maxTotalSize) {
         return void res.status(413).json({
           code: 1,
-          msg: `存储空间不足：已用 ${(used / 1024 / 1024).toFixed(1)}MB / ${(maxTotalSize / 1024 / 1024).toFixed(1)}MB`,
+          msg: `存储空间不足：已用 ${(used / 1024 / 1024).toFixed(1)}MB / ${(live.maxTotalSize / 1024 / 1024).toFixed(1)}MB`,
         });
       }
     }
@@ -1036,7 +1206,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       status = err.statusCode;
     } else if (err instanceof multer.MulterError) {
       status = 400;
-      if (err.code === 'LIMIT_FILE_SIZE') msg = `文件超出大小限制（${(maxSize / 1024 / 1024).toFixed(0)}MB）`;
+      if (err.code === 'LIMIT_FILE_SIZE') msg = `文件超出大小限制（${(live.maxSize / 1024 / 1024).toFixed(0)}MB）`;
       else if (err.code === 'LIMIT_FILE_COUNT') msg = '一次上传的文件数量超出限制';
       else if (err.code === 'LIMIT_UNEXPECTED_FILE') msg = '非预期的文件字段';
     }

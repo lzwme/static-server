@@ -13,10 +13,10 @@ import { listFiles } from './localsend-path';
 export interface CleanerOptions {
   /** 存储目录 */
   dir: string;
-  /** 保留天数，超过该天数的文件会被删除 */
-  maxAgeDays?: number;
-  /** 容量上限（字节），超出后从最旧的文件开始删除 */
-  maxTotalSize?: number;
+  /** 保留天数，超过该天数的文件会被删除。传入函数表示运行时取值 */
+  maxAgeDays?: number | (() => number);
+  /** 容量上限（字节），超出后从最旧的文件开始删除。传入函数表示运行时取值 */
+  maxTotalSize?: number | (() => number);
   /** 检查间隔（毫秒），默认 1 小时 */
   intervalMs?: number;
   /** 删除回调，用于记录日志 */
@@ -31,12 +31,25 @@ export interface Cleaner {
 }
 
 export function createCleaner(options: CleanerOptions): Cleaner {
-  const { dir, maxAgeDays = 0, maxTotalSize = 0, intervalMs = 60 * 60 * 1000, onRemoved } = options;
+  const { dir, intervalMs = 60 * 60 * 1000, onRemoved } = options;
+  /** 运行时读取当前生效的保留天数 */
+  const getMaxAgeDays = (): number => {
+    const value = typeof options.maxAgeDays === 'function' ? options.maxAgeDays() : options.maxAgeDays;
+    return value ?? 0;
+  };
+  /** 运行时读取当前生效的容量上限 */
+  const getMaxTotalSize = (): number => {
+    const value = typeof options.maxTotalSize === 'function' ? options.maxTotalSize() : options.maxTotalSize;
+    return value ?? 0;
+  };
 
   const run = (): string[] => {
     const removed: string[] = [];
     const files = listFiles(dir);
     if (!files.length) return removed;
+
+    const maxAgeDays = getMaxAgeDays();
+    const maxTotalSize = getMaxTotalSize();
 
     // 1. 按保留天数删除
     if (maxAgeDays > 0) {

@@ -11,12 +11,12 @@ import { timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 
 export interface GuardOptions {
-  /** 访问令牌。为空表示不校验 */
-  token?: string;
-  /** 单 IP 最大并发上传数，默认 3 */
-  maxConcurrent?: number;
-  /** 频率限制：窗口毫秒数与窗口内最大请求数，默认 120 次 / 60 秒 */
-  rateLimit?: { windowMs?: number; max?: number };
+  /** 访问令牌。为空表示不校验。传入函数表示运行时取值 */
+  token?: string | (() => string);
+  /** 单 IP 最大并发上传数，默认 3。传入函数表示运行时取值 */
+  maxConcurrent?: number | (() => number);
+  /** 频率限制：窗口毫秒数与窗口内最大请求数，默认 120 次 / 60 秒。传入函数表示运行时取值 */
+  rateLimit?: { windowMs?: number; max?: number } | (() => { windowMs?: number; max?: number } | undefined);
 }
 
 export interface Guard {
@@ -51,10 +51,21 @@ function clientIp(req: Request): string {
 const STATIC_ASSET_RE = /\.(css|js|mjs|json|webmanifest|map|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|otf)$/i;
 
 export function createGuard(options: GuardOptions = {}): Guard {
-  const token = options.token || '';
-  const maxConcurrent = options.maxConcurrent ?? 3;
-  const windowMs = options.rateLimit?.windowMs ?? 60_000;
-  const maxRequests = options.rateLimit?.max ?? 120;
+  /** 运行时读取当前生效的令牌 */
+  const getToken = (): string => {
+    const value = typeof options.token === 'function' ? options.token() : options.token;
+    return value || '';
+  };
+  /** 运行时读取当前生效的并发上限 */
+  const getMaxConcurrent = (): number => {
+    const value = typeof options.maxConcurrent === 'function' ? options.maxConcurrent() : options.maxConcurrent;
+    return value ?? 3;
+  };
+  /** 运行时读取当前生效的频率限制 */
+  const getRateLimit = (): { windowMs: number; max: number } => {
+    const raw = typeof options.rateLimit === 'function' ? options.rateLimit() : options.rateLimit;
+    return { windowMs: raw?.windowMs ?? 60_000, max: raw?.max ?? 120 };
+  };
 
   /** ip -> 当前并发数 */
   const concurrent = new Map<string, number>();
@@ -62,23 +73,22 @@ export function createGuard(options: GuardOptions = {}): Guard {
   const hits = new Map<string, number[]>();
 
   // 定期清理过期数据，避免长期运行内存增长
-  const timer = setInterval(
-    () => {
-      const now = Date.now();
-      for (const [ip, list] of hits) {
-        const valid = list.filter((t) => now - t < windowMs);
-        if (valid.length) hits.set(ip, valid);
-        else hits.delete(ip);
-      }
-      for (const [ip, count] of concurrent) {
-        if (count <= 0) concurrent.delete(ip);
-      }
-    },
-    Math.max(windowMs, 30_000),
-  );
+  const timer = setInterval(() => {
+    const now = Date.now();
+    const { windowMs } = getRateLimit();
+    for (const [ip, list] of hits) {
+      const valid = list.filter((t) => now - t < windowMs);
+      if (valid.length) hits.set(ip, valid);
+      else hits.delete(ip);
+    }
+    for (const [ip, count] of concurrent) {
+      if (count <= 0) concurrent.delete(ip);
+    }
+  }, 30_000);
   timer.unref?.();
 
   const requireToken: Guard['requireToken'] = (req, res, next) => {
+    const token = getToken();
     if (!token) return next();
     // 静态资源无需令牌（接口路径除外，避免以 .css 等后缀绕过校验）
     if (!req.path.startsWith('/api/') && STATIC_ASSET_RE.test(req.path)) return next();
@@ -99,6 +109,7 @@ export function createGuard(options: GuardOptions = {}): Guard {
   };
 
   const rateLimit: Guard['rateLimit'] = (req, res, next) => {
+    const { windowMs, max: maxRequests } = getRateLimit();
     if (!maxRequests || maxRequests <= 0) return next();
     const ip = clientIp(req);
     const now = Date.now();
@@ -113,6 +124,7 @@ export function createGuard(options: GuardOptions = {}): Guard {
   };
 
   const limitConcurrent: Guard['limitConcurrent'] = (req, res, next) => {
+    const maxConcurrent = getMaxConcurrent();
     if (!maxConcurrent || maxConcurrent <= 0) return next();
     const ip = clientIp(req);
     const current = concurrent.get(ip) || 0;

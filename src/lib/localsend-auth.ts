@@ -53,6 +53,15 @@ export interface Auth {
   get: (token: string) => Session | null;
   /** 判定某个会话令牌对应的角色 */
   roleOf: (token: string) => Role;
+  /**
+   * 运行时更新口令与会话有效期。
+   *
+   * 口令一旦变更，此前签发的会话全部失效（keepToken 指定的当前会话保留），
+   * 避免口令泄露后旧会话仍能继续使用。
+   */
+  update: (options: { password?: string; visitorPassword?: string; sessionTtl?: number }, keepToken?: string) => void;
+  /** 校验管理员口令。开放模式下没有口令，返回 true（无需验证） */
+  verifyAdmin: (input: string) => boolean;
   /** 清理过期会话，返回清理数量 */
   cleanup: () => number;
   /** 停止定时清理 */
@@ -69,9 +78,9 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 export function createAuth(options: AuthOptions = {}): Auth {
-  const password = options.password || '';
-  const visitorPassword = options.visitorPassword || '';
-  const ttl = options.sessionTtl ?? 24 * 60 * 60 * 1000;
+  let password = options.password || '';
+  let visitorPassword = options.visitorPassword || '';
+  let ttl = options.sessionTtl ?? 24 * 60 * 60 * 1000;
 
   /** token -> 会话 */
   const sessions = new Map<string, Session>();
@@ -136,6 +145,32 @@ export function createAuth(options: AuthOptions = {}): Auth {
       const session = this.get(token);
       if (!session) return 'guest';
       return session.role;
+    },
+    update(next, keepToken) {
+      let changed = false;
+      if (next.password !== undefined && next.password !== password) {
+        password = next.password || '';
+        changed = true;
+      }
+      if (next.visitorPassword !== undefined && next.visitorPassword !== visitorPassword) {
+        visitorPassword = next.visitorPassword || '';
+        changed = true;
+      }
+      if (next.sessionTtl !== undefined && next.sessionTtl > 0) {
+        ttl = next.sessionTtl;
+      }
+      // 口令变了：此前的会话全部失效，当前会话（keepToken）保留
+      if (changed) {
+        for (const token of [...sessions.keys()]) {
+          if (token === keepToken) continue;
+          sessions.delete(token);
+        }
+      }
+    },
+    verifyAdmin(input) {
+      // 开放模式本来就没有口令，无需验证
+      if (!password) return true;
+      return safeEqual(String(input ?? ''), password);
     },
     cleanup,
     stop() {

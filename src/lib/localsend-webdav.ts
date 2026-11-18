@@ -34,14 +34,14 @@ import { isInternalDirName, resolveInDir, safeRelPath } from './localsend-path';
 export interface WebDavOptions {
   /** 存储目录 */
   dir: string;
-  /** 访问令牌。设置后需使用 Basic Auth（用户名为 localsend） */
-  token?: string;
-  /** 禁止上传的扩展名（含点，如 .php） */
-  blockExtensions?: string[];
-  /** 存储总容量上限（字节），0 表示不限制 */
-  maxTotalSize?: number;
-  /** 单文件大小上限（字节） */
-  maxSize?: number;
+  /** 访问令牌。设置后需使用 Basic Auth（用户名为 localsend）。传入函数表示运行时取值 */
+  token?: string | (() => string);
+  /** 禁止上传的扩展名（含点，如 .php）。传入函数表示运行时取值 */
+  blockExtensions?: string[] | (() => string[]);
+  /** 存储总容量上限（字节），0 表示不限制。传入函数表示运行时取值 */
+  maxTotalSize?: number | (() => number);
+  /** 单文件大小上限（字节）。传入函数表示运行时取值 */
+  maxSize?: number | (() => number);
   /** 挂载路径前缀，如 /localsend/dav */
   basePath?: string;
 }
@@ -257,9 +257,28 @@ function buildDirHtml(dir: string, relPath: string): string {
  * 生成 WebDAV 处理函数
  */
 export function createWebDavHandler(options: WebDavOptions) {
-  const { dir, token = '', maxTotalSize = 0, maxSize = 0 } = options;
+  const { dir } = options;
   const basePath = (options.basePath || '/localsend/dav').replace(/\/+$/, '');
-  const blockExts = new Set((options.blockExtensions || []).map((e) => (e.startsWith('.') ? e : `.${e}`).toLowerCase()));
+  /** 运行时读取当前生效的访问令牌 */
+  const getToken = (): string => {
+    const value = typeof options.token === 'function' ? options.token() : options.token;
+    return value || '';
+  };
+  /** 运行时读取当前生效的单文件大小上限 */
+  const getMaxSize = (): number => {
+    const value = typeof options.maxSize === 'function' ? options.maxSize() : options.maxSize;
+    return value ?? 0;
+  };
+  /** 运行时读取当前生效的容量上限 */
+  const getMaxTotalSize = (): number => {
+    const value = typeof options.maxTotalSize === 'function' ? options.maxTotalSize() : options.maxTotalSize;
+    return value ?? 0;
+  };
+  /** 运行时读取当前生效的禁止扩展名 */
+  const getBlockExts = (): Set<string> => {
+    const list = typeof options.blockExtensions === 'function' ? options.blockExtensions() : options.blockExtensions;
+    return new Set((list || []).map((e) => (e.startsWith('.') ? e : `.${e}`).toLowerCase()));
+  };
 
   /** 从请求中解析相对路径（逐段解码，避免 %2F 造成的歧义） */
   const relOf = (req: Request): { rel: string; invalid: boolean } => {
@@ -283,7 +302,7 @@ export function createWebDavHandler(options: WebDavOptions) {
   };
 
   return async function handleWebDav(req: Request, res: Response): Promise<void> {
-    if (!checkDavAuth(req, token)) {
+    if (!checkDavAuth(req, getToken())) {
       res.setHeader('WWW-Authenticate', 'Basic realm="LocalSend"');
       res.status(401).send('需要访问令牌');
       return;
@@ -347,7 +366,7 @@ export function createWebDavHandler(options: WebDavOptions) {
       }
       const name = relPath.split('/').pop() || '';
       const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')).toLowerCase() : '';
-      if (ext && blockExts.has(ext)) {
+      if (ext && getBlockExts().has(ext)) {
         res.status(403).send(`出于安全考虑，禁止上传 ${ext} 类型的文件`);
         return;
       }
@@ -356,6 +375,8 @@ export function createWebDavHandler(options: WebDavOptions) {
         res.status(403).send('非法路径');
         return;
       }
+      const maxSize = getMaxSize();
+      const maxTotalSize = getMaxTotalSize();
       const declared = Number(req.headers['content-length'] || 0);
       if (maxSize && declared > maxSize) {
         res.status(413).send(`文件超出大小限制（${Math.round(maxSize / 1024 / 1024)}MB）`);

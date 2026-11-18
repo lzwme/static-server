@@ -43,8 +43,8 @@ export interface ChunkStoreOptions {
   tmpDir: string;
   /** 上传任务有效期（毫秒），超时自动清理 */
   ttl?: number;
-  /** 单文件大小上限（字节） */
-  maxSize?: number;
+  /** 单文件大小上限（字节）。传入函数表示运行时取值 */
+  maxSize?: number | (() => number);
 }
 
 export interface ChunkInitResult {
@@ -92,7 +92,11 @@ function partName(uploadId: string, index: number): string {
 export function createChunkStore(options: ChunkStoreOptions) {
   const { tmpDir } = options;
   const ttl = options.ttl ?? 24 * 60 * 60 * 1000;
-  const maxSize = options.maxSize ?? 0;
+  /** 运行时读取当前生效的单文件大小上限 */
+  const getMaxSize = (): number => {
+    const value = typeof options.maxSize === 'function' ? options.maxSize() : options.maxSize;
+    return value ?? 0;
+  };
 
   /** uploadId -> 元信息 */
   const metas = new Map<string, ChunkMeta>();
@@ -324,7 +328,9 @@ export function createChunkStore(options: ChunkStoreOptions) {
     },
 
     /** 内部：单文件大小上限 */
-    maxSize,
+    get maxSize() {
+      return getMaxSize();
+    },
     /** 内部：分片大小钳制 */
     clampChunkSize(size?: number): number {
       const n = Number(size) || DEFAULT_CHUNK_SIZE;
