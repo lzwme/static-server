@@ -9,6 +9,7 @@
  *  - DELETE /localsend/api/delete/:name    删除
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { color } from 'console-log-colors';
@@ -19,6 +20,7 @@ import { logger } from './get-logger';
 import { createGuard } from './lib/localsend-guard';
 import { listFiles, resolveInDir, safeRelPath } from './lib/localsend-path';
 import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
+import { createZipChunks, type ZipEntry } from './lib/zip';
 import { getIp } from './lib/utils';
 
 /**
@@ -373,6 +375,40 @@ export async function initLocalsend(app: Express): Promise<void> {
     if (!filePath || !existsSync(filePath)) return void res.status(404).json({ code: 1, msg: '文件不存在' });
     rmSync(filePath);
     res.json({ code: 0 });
+  });
+
+  // 批量打包下载：把多个文件流式打成 zip（不落盘、不占额外磁盘）
+  app.get('/localsend/api/zip', async (req: Request, res: Response) => {
+    const raw = String(req.query.names || '');
+    const names = raw
+      .split(',')
+      .map((n) => safeRelPath(n))
+      .filter(Boolean);
+    if (!names.length) return void res.status(400).json({ code: 1, msg: '未指定要打包的文件' });
+
+    const entries: ZipEntry[] = [];
+    for (const rel of names.slice(0, 500)) {
+      const filePath = resolveInDir(dir, rel);
+      if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) continue;
+      entries.push({ name: rel, path: filePath, mtime: statSync(filePath).mtime });
+    }
+    if (!entries.length) return void res.status(404).json({ code: 1, msg: '没有可打包的文件' });
+
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="localsend-${stamp}.zip"; filename*=UTF-8''localsend-${stamp}.zip`,
+    );
+    try {
+      for await (const chunk of createZipChunks(entries, (p) => createReadStream(p))) {
+        res.write(chunk);
+      }
+      res.end();
+    } catch (err) {
+      logger.error('[localsend zip]', err);
+      res.end();
+    }
   });
 
   // 批量删除
