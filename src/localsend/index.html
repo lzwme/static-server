@@ -110,7 +110,13 @@
   'use strict';
   var API = '/localsend/api';
   var $ = function (id) { return document.getElementById(id); };
-  var pageUrl = location.origin + location.pathname;
+  // 访问令牌（服务端配置 token 时，访问地址需带 ?key=xxx）
+  var KEY = new URLSearchParams(location.search).get('key') || '';
+  function withKey(url) {
+    if (!KEY) return url;
+    return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'key=' + encodeURIComponent(KEY);
+  }
+  var pageUrl = location.origin + location.pathname + (KEY ? '?key=' + encodeURIComponent(KEY) : '');
   var sortType = 'time';
   var sortOrder = 'desc';
   var modalQrCode = null;
@@ -189,7 +195,7 @@
   }
 
   function loadFiles() {
-    return fetch(API + '/list?sort=' + sortType + '&order=' + sortOrder)
+    return fetch(withKey(API + '/list?sort=' + sortType + '&order=' + sortOrder))
       .then(function (r) { return r.json(); })
       .then(function (json) { renderList(json.data || []); })
       .catch(function () { toast('文件列表加载失败', 'err'); });
@@ -265,7 +271,7 @@
     var statusEl = row.querySelector('[data-status]');
     var speedEl = row.querySelector('[data-speed]');
     var xhr = new XMLHttpRequest();
-    xhr.open('POST', API + '/upload');
+    xhr.open('POST', withKey(API + '/upload'));
     var lastLoaded = 0;
     var lastTime = Date.now();
     xhr.upload.onprogress = function (e) {
@@ -322,7 +328,7 @@
   // 原生下载：由浏览器直接下载 URL，不经过 XHR，内存占用恒定
   function nativeDownload(name) {
     var a = document.createElement('a');
-    a.href = API + '/download/' + encodeURIComponent(name);
+    a.href = withKey(API + '/download/' + encodeURIComponent(name));
     a.download = name;
     a.style.display = 'none';
     document.body.appendChild(a);
@@ -332,7 +338,7 @@
 
   // 小文件下载：XHR + blob，可显示进度
   function xhrDownload(name, onDone) {
-    var url = API + '/download/' + encodeURIComponent(name);
+    var url = withKey(API + '/download/' + encodeURIComponent(name));
     var xhr = new XMLHttpRequest();
     xhr.open('GET', url);
     xhr.responseType = 'blob';
@@ -380,7 +386,7 @@
   var textExts = ['txt', 'md', 'json', 'js', 'ts', 'html', 'css', 'xml', 'log', 'csv', 'yml', 'yaml', 'ini', 'conf'];
   function previewFile(name) {
     var ext = (name.split('.').pop() || '').toLowerCase();
-    var url = API + '/preview/' + encodeURIComponent(name);
+    var url = withKey(API + '/preview/' + encodeURIComponent(name));
     if (imgExts.indexOf(ext) >= 0 || textExts.indexOf(ext) < 0) {
       window.open(url, '_blank');
       return;
@@ -396,7 +402,7 @@
   }
 
   function copyLink(name) {
-    copyText(location.origin + API + '/download/' + encodeURIComponent(name));
+    copyText(withKey(location.origin + API + '/download/' + encodeURIComponent(name)));
   }
   function showQr(text, label) {
     $('qrModal').classList.remove('hidden');
@@ -417,7 +423,7 @@
   }
   function deleteFile(name) {
     if (!window.confirm('确定删除文件：' + name + ' ？')) return;
-    fetch(API + '/delete/' + encodeURIComponent(name), { method: 'DELETE' })
+    fetch(withKey(API + '/delete/' + encodeURIComponent(name)), { method: 'DELETE' })
       .then(function (r) { return r.json(); })
       .then(function (json) {
         if (json.code === 0) { toast('已删除：' + name, 'ok'); loadFiles(); }
@@ -459,7 +465,7 @@
     if (act === 'download') downloadFile(name);
     else if (act === 'preview') previewFile(name);
     else if (act === 'copy') copyLink(name);
-    else if (act === 'qr') showQr(location.origin + API + '/download/' + encodeURIComponent(name), '扫码直连下载：' + name);
+    else if (act === 'qr') showQr(withKey(location.origin + API + '/download/' + encodeURIComponent(name)), '扫码直连下载：' + name);
     else if (act === 'delete') deleteFile(name);
   });
 
@@ -517,7 +523,7 @@
         loadFiles();
         return;
       }
-      fetch(API + '/delete/' + encodeURIComponent(names[done]), { method: 'DELETE' })
+      fetch(withKey(API + '/delete/' + encodeURIComponent(names[done])), { method: 'DELETE' })
         .then(function (r) { return r.json(); })
         .then(function (j) { if (j.code !== 0) failed++; done++; next(); })
         .catch(function () { failed++; done++; next(); });

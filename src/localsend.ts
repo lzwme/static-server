@@ -15,6 +15,7 @@ import express, { type Express, type Request, type Response } from 'express';
 import multer from 'multer';
 import { getConfig } from './config';
 import { logger } from './get-logger';
+import { createGuard } from './lib/localsend-guard';
 import { getIp } from './lib/utils';
 
 /**
@@ -104,6 +105,23 @@ function uniqueName(targetDir: string, name: string) {
   return finalName;
 }
 
+/**
+ * 计算目录下所有文件的总大小（字节）。忽略读取失败的条目。
+ */
+export function dirSize(target: string): number {
+  if (!existsSync(target)) return 0;
+  let total = 0;
+  for (const name of readdirSync(target)) {
+    try {
+      const stat = statSync(join(target, name));
+      if (stat.isFile()) total += stat.size;
+    } catch {
+      // 文件可能刚好被删除，跳过
+    }
+  }
+  return total;
+}
+
 export async function initLocalsend(app: Express): Promise<void> {
   const config = await getConfig();
   const raw = config.localsend;
@@ -114,13 +132,29 @@ export async function initLocalsend(app: Express): Promise<void> {
 
   const dir = ls.dir || '';
   const maxSize = ls.maxSize || 1024 * 1024 * 1024;
+  const maxTotalSize = ls.maxTotalSize || 0;
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  // 访问防护：令牌 / 频率限制 / 并发限制
+  const guard = createGuard({
+    token: ls.token,
+    maxConcurrent: ls.maxConcurrent,
+    rateLimit: ls.rateLimit,
+  });
 
   const port = config.port || 80;
   const ipUrl = `http://${getIp() || 'localhost'}:${port}`;
+  // 配置了令牌时，把令牌带上，方便直接扫码访问
+  const keyQuery = ls.token ? `?key=${encodeURIComponent(ls.token)}` : '';
   logger.log(color.green('LocalSend : '.padStart(15, ' ')), color.greenBright('局域网文件传输功能已开启'));
   logger.log(color.green('LocalSend DIR : '.padStart(15, ' ')), color.cyanBright(dir));
-  logger.log(color.green('LocalSend URL : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend`));
+  logger.log(color.green('LocalSend URL : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend${keyQuery}`));
+  if (ls.token) logger.log(color.green('LocalSend KEY : '.padStart(15, ' ')), color.yellowBright('已启用访问令牌'));
+
+  // 访问令牌校验（配置了 token 才生效），覆盖页面与所有接口
+  app.use('/localsend', guard.requireToken);
+  // 接口频率限制
+  app.use('/localsend/api', guard.rateLimit);
 
   // 页面：初始化时读入独立 html 单文件
   const pageHtml = readFileSync(resolve(__dirname, PAGE_REL_PATH), 'utf8');
@@ -166,24 +200,65 @@ export async function initLocalsend(app: Express): Promise<void> {
     // 再由 decodeUploadName 按 utf-8 / gb18030 解码，避免中文文件名乱码
     defParamCharset: 'latin1',
   });
-  app.post('/localsend/api/upload', upload.array('files'), (req: Request, res: Response) => {
-    const files = (req.files || []) as Express.Multer.File[];
-    const results: { name: string; size: number }[] = [];
-    const errors: string[] = [];
-
-    for (const f of files) {
-      try {
-        const name = uniqueName(dir, safeName(decodeUploadName(f.originalname)) || `file_${Date.now()}`);
-        renameSync(f.path, join(dir, name));
-        results.push({ name, size: f.size });
-      } catch (err) {
-        logger.error('[localsend upload]', err);
-        errors.push(f.originalname || '');
+  app.post(
+    '/localsend/api/upload',
+    // 单 IP 并发上传数限制
+    guard.limitConcurrent,
+    // 总容量预检：目录已用容量与本次请求体大小共同判断，超出配额直接拒绝
+    (req: Request, res: Response, next) => {
+      if (!maxTotalSize) return next();
+      const used = dirSize(dir);
+      if (used >= maxTotalSize) {
+        res.status(413).json({
+          code: 1,
+          msg: `存储空间已满：${(used / 1024 / 1024).toFixed(1)}MB / ${(maxTotalSize / 1024 / 1024).toFixed(1)}MB`,
+        });
+        return;
       }
-    }
+      // multipart 请求体的 Content-Length 包含少量协议开销，作为保守估计
+      const need = Number(req.get('Content-Length') || 0);
+      if (need > 0 && used + need > maxTotalSize) {
+        res.status(413).json({
+          code: 1,
+          msg: `剩余容量不足：已用 ${(used / 1024 / 1024).toFixed(1)}MB，本次需要约 ${(need / 1024 / 1024).toFixed(1)}MB`,
+        });
+        return;
+      }
+      next();
+    },
+    upload.array('files'),
+    (req: Request, res: Response) => {
+      const files = (req.files || []) as Express.Multer.File[];
+      const results: { name: string; size: number }[] = [];
+      const errors: string[] = [];
 
-    res.json({ code: 0, data: { results, errors } });
-  });
+      for (const f of files) {
+        try {
+          const name = uniqueName(dir, safeName(decodeUploadName(f.originalname)) || `file_${Date.now()}`);
+          renameSync(f.path, join(dir, name));
+          results.push({ name, size: f.size });
+        } catch (err) {
+          logger.error('[localsend upload]', err);
+          errors.push(f.originalname || '');
+        }
+      }
+
+      // 容量复核：写入后若超出总配额，撤销本次写入并提示
+      if (maxTotalSize && dirSize(dir) > maxTotalSize) {
+        for (const r of results) {
+          try {
+            rmSync(join(dir, r.name));
+          } catch {
+            // 忽略删除失败
+          }
+        }
+        res.status(413).json({ code: 1, msg: '存储容量不足，本次上传已撤销' });
+        return;
+      }
+
+      res.json({ code: 0, data: { results, errors } });
+    },
+  );
 
   // 下载。dotfiles: 'allow' 以兼容 ~/.static-server 这类隐藏目录作为存储目录
   app.get('/localsend/api/download/:name', (req: Request, res: Response) => {

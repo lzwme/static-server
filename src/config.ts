@@ -2,11 +2,12 @@ import { existsSync, readFileSync, type Stats } from 'node:fs';
 import type { ServerOptions } from 'node:https';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { assign, type color, type NLogger } from '@lzwme/fe-utils';
+import type { color, NLogger } from '@lzwme/fe-utils';
 import type { Express, Response } from 'express';
 import type { Options } from 'http-proxy-middleware';
 import { logger } from './get-logger';
 import { getCert } from './lib/get-cert';
+import { isPlainObject, mergeConfig } from './lib/merge-config';
 
 export interface LocalSendConfig {
   /** 是否开启 localsend 局域网文件传输功能 */
@@ -15,6 +16,16 @@ export interface LocalSendConfig {
   dir?: string;
   /** 单个文件上传大小限制（字节）。默认 1GB */
   maxSize?: number;
+  /** 存储目录总容量上限（字节）。超出后拒绝新的上传。默认不限制 */
+  maxTotalSize?: number;
+  /** 访问令牌。设置后，页面与所有接口都需要携带（?key=xxx 或 X-Localsend-Key 请求头） */
+  token?: string;
+  /** 单个 IP 的最大并发上传数。默认 3 */
+  maxConcurrent?: number;
+  /** 单个 IP 的请求频率限制。默认 120 次 / 60 秒 */
+  rateLimit?: { windowMs?: number; max?: number };
+  /** 禁止上传的文件扩展名列表（如 ['.php', '.phtml']）。默认禁止常见服务端脚本 */
+  blockExtensions?: string[];
 }
 
 export interface SSConfig {
@@ -60,6 +71,50 @@ export interface SSConfig {
   setHeaders?: (res: Response<any, Record<string, any>>, path: string, stat: Stats) => Record<string, string | string[] | undefined>;
 }
 
+/** 用户级配置目录名。默认位于用户主目录下 */
+export const USER_CONFIG_DIR = '.static-server';
+/** 配置文件名 */
+export const CONFIG_FILE_NAME = 'ss.config.js';
+
+/** 用户级配置目录：~/.static-server */
+export function getUserConfigDir(): string {
+  return resolve(homedir(), USER_CONFIG_DIR);
+}
+
+/** 用户级配置文件：~/.static-server/ss.config.js */
+export function getUserConfigFile(): string {
+  return resolve(getUserConfigDir(), CONFIG_FILE_NAME);
+}
+
+/** 当前工作目录下的配置文件：./ss.config.js */
+export function getCwdConfigFile(): string {
+  return resolve(process.cwd(), CONFIG_FILE_NAME);
+}
+
+/**
+ * 加载配置文件。
+ * 文件不存在时返回 undefined；加载失败时输出错误提示并忽略该文件，避免整个服务启动失败。
+ */
+function loadConfigFile(file: string): Partial<SSConfig> | undefined {
+  if (!existsSync(file)) return undefined;
+  try {
+    const mod = require(file);
+    const cfg = mod && typeof mod === 'object' && mod.__esModule && mod.default ? mod.default : mod;
+    return isPlainObject(cfg) ? (cfg as Partial<SSConfig>) : undefined;
+  } catch (e) {
+    logger.error(`配置文件加载失败，已忽略该文件：${file}`, e);
+    return undefined;
+  }
+}
+
+/** 归一化单个配置文件的内容，使其可与其它配置深度合并 */
+function normalizeConfig(cfg?: Partial<SSConfig>): Partial<SSConfig> | undefined {
+  if (!cfg) return undefined;
+  // localsend 支持布尔值，归一化为对象后再合并，避免布尔值覆盖掉对象配置
+  if (typeof cfg.localsend === 'boolean') return { ...cfg, localsend: { enabled: cfg.localsend } };
+  return cfg;
+}
+
 const ssConfig: SSConfig = {
   log: false,
   open: false,
@@ -80,10 +135,11 @@ const ssConfig: SSConfig = {
 export async function getConfig(useCache = true, cfg?: SSConfig) {
   if (ssConfig.port && useCache) return ssConfig;
 
-  const cfgFile = resolve(process.cwd(), './ss.config.js');
-  if (existsSync(cfgFile)) assign(ssConfig, require(cfgFile));
+  // 配置优先级：内置默认值 < 用户级配置(~/.static-server/ss.config.js) < 当前目录配置(./ss.config.js) < 运行时参数
+  mergeConfig(ssConfig, normalizeConfig(loadConfigFile(getUserConfigFile())));
+  mergeConfig(ssConfig, normalizeConfig(loadConfigFile(getCwdConfigFile())));
 
-  if (cfg) assign(ssConfig, cfg);
+  if (cfg) mergeConfig(ssConfig, cfg);
 
   ssConfig.rootDir = resolve(process.cwd(), typeof ssConfig.rootDir === 'string' ? ssConfig.rootDir : '.');
 
@@ -92,7 +148,7 @@ export async function getConfig(useCache = true, cfg?: SSConfig) {
     const localsend: LocalSendConfig =
       typeof ssConfig.localsend === 'boolean' ? { enabled: ssConfig.localsend } : { ...ssConfig.localsend };
     localsend.enabled = typeof ssConfig.localsend === 'boolean' ? ssConfig.localsend : localsend.enabled !== false;
-    localsend.dir = process.env.SS_LOCALSEND_DIR || localsend.dir || resolve(homedir(), '.static-server/localsend');
+    localsend.dir = process.env.SS_LOCALSEND_DIR || localsend.dir || resolve(getUserConfigDir(), 'localsend');
     localsend.maxSize = localsend.maxSize || 1024 * 1024 * 1024;
     ssConfig.localsend = localsend;
   }
