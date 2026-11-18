@@ -11,7 +11,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, extname, join, resolve } from 'node:path';
 import { color } from 'console-log-colors';
-import type { Express, Request, Response } from 'express';
+import express, { type Express, type Request, type Response } from 'express';
 import multer from 'multer';
 import { getConfig } from './config';
 import { logger } from './get-logger';
@@ -22,6 +22,9 @@ import { getIp } from './lib/utils';
  * 构建后页面位于 dist/localsend/index.html；dev（ts-node）运行时位于 src/localsend/index.html。
  */
 const PAGE_REL_PATH = './localsend/index.html';
+
+/** 页面静态资源目录（相对本模块），与 PAGE_REL_PATH 同级 */
+const PAGE_DIR = './localsend';
 
 /** 去除文件名中的路径分隔符，防止目录穿越。非法返回空串 */
 function safeName(name?: unknown) {
@@ -124,6 +127,15 @@ export async function initLocalsend(app: Express): Promise<void> {
   app.get('/localsend', (_req: Request, res: Response) => {
     res.type('html').send(pageHtml);
   });
+
+  // 页面静态资源（样式、二维码库、图标等）：与页面同目录，供离线局域网使用
+  app.use(
+    '/localsend',
+    express.static(resolve(__dirname, PAGE_DIR), {
+      index: false,
+      maxAge: '1h',
+    }),
+  );
 
   // 文件列表
   app.get('/localsend/api/list', (req: Request, res: Response) => {

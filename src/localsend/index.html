@@ -5,8 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>LocalSend · 局域网文件传输</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>" />
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://cdn.jsdelivr.net/npm/qr-code-styling@1/lib/qr-code-styling.js"></script>
+<!-- 本地资源：局域网常常没有外网，CDN 不可达时会导致页面无样式、二维码无法生成 -->
+<link rel="stylesheet" href="/localsend/style.css" />
+<script src="/localsend/vendor/qr-code-styling.js"></script>
 <style>
   #fileInput { display: none; }
   #toast { transition: opacity .25s; }
