@@ -57,6 +57,10 @@
         <button id="pickDirBtn" class="px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 hover:border-emerald-500/40 transition text-xs sm:text-sm text-slate-300 shrink-0" title="上传整个文件夹，服务端会保留原有目录结构">
           📁 上传文件夹
         </button>
+        <button id="watchDirBtn" class="px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 hover:border-emerald-500/40 transition text-xs sm:text-sm text-slate-300 shrink-0" title="选择一个本地目录，目录里新增的文件会自动上传">
+          📡 监听目录
+        </button>
+        <span id="watchStatus" class="hidden text-[11px] sm:text-xs text-emerald-400 items-center gap-1.5"></span>
         <span class="text-[11px] sm:text-xs text-slate-500 hidden sm:inline">保留原有目录结构</span>
         <input id="dirInput" type="file" webkitdirectory directory multiple />
       </div>
@@ -461,6 +465,104 @@
       filtered = filtered.filter(function (f) { return f.mtime >= limit; });
     }
     return filtered;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 本地目录自动上传
+  //
+  // 选中一个本地目录后定时扫描，目录里新增或修改的文件会自动上传到服务端。
+  // 依赖 File System Access API（Chrome / Edge 等），不支持的浏览器会给出提示。
+  // ---------------------------------------------------------------------------
+  var watchHandle = null; // 被监听的目录句柄
+  var watchTimer = null; // 扫描定时器
+  var watchSeen = {}; // 已上传文件的标识：名称:大小:修改时间
+  var WATCH_INTERVAL = 3000; // 扫描间隔（毫秒）
+
+  /** 更新监听状态提示 */
+  function updateWatchStatus() {
+    var el = $('watchStatus');
+    if (!el) return;
+    if (!watchHandle) {
+      el.classList.add('hidden');
+      el.classList.remove('flex');
+      el.textContent = '';
+      $('watchDirBtn').textContent = '📡 监听目录';
+      return;
+    }
+    el.classList.remove('hidden');
+    el.classList.add('flex');
+    el.innerHTML = '<span>📡 正在监听「' + escapeHtml(watchHandle.name) + '」</span>' +
+      '<button id="watchStopBtn" class="px-1.5 py-0.5 rounded border border-slate-700 hover:bg-slate-700 transition">停止</button>';
+    $('watchDirBtn').textContent = '📡 换个目录';
+    $('watchStopBtn').addEventListener('click', stopWatchDir);
+  }
+
+  /** 停止监听 */
+  function stopWatchDir() {
+    if (watchTimer) clearInterval(watchTimer);
+    watchTimer = null;
+    watchHandle = null;
+    watchSeen = {};
+    updateWatchStatus();
+    toast('已停止监听本地目录');
+  }
+
+  /** 扫描一次目录，把新增文件加入上传队列 */
+  async function scanWatchDir() {
+    if (!watchHandle) return;
+    var handle = watchHandle;
+    try {
+      var jobs = [];
+      for await (var entry of handle.values()) {
+        if (entry.kind !== 'file') continue;
+        jobs.push(
+          entry
+            .getFile()
+            .then(function (file) {
+              // 用「名称:大小:修改时间」判断是否已经传过
+              var key = entry.name + ':' + file.size + ':' + file.lastModified;
+              if (watchSeen[key]) return;
+              watchSeen[key] = true;
+              enqueueUpload(file, entry.name);
+            })
+            .catch(function () {
+              // 单个文件读取失败不影响其它文件
+            })
+        );
+      }
+      await Promise.all(jobs);
+      pumpQueue();
+    } catch (e) {
+      // 目录权限失效等情况忽略，等待下一次扫描
+    }
+  }
+
+  /** 选择目录并开始监听 */
+  function startWatchDir() {
+    if (!window.showDirectoryPicker) {
+      toast('当前浏览器不支持目录监听，请使用 Chrome / Edge 桌面版', 'err');
+      return;
+    }
+    if (!window.isSecureContext) {
+      toast('目录监听需要 https 或 localhost 环境', 'err');
+      return;
+    }
+    window
+      .showDirectoryPicker({ mode: 'read' })
+      .then(function (handle) {
+        watchHandle = handle;
+        watchSeen = {};
+        if (watchTimer) clearInterval(watchTimer);
+        watchTimer = setInterval(scanWatchDir, WATCH_INTERVAL);
+        updateWatchStatus();
+        scanWatchDir();
+        toast('已开始监听「' + handle.name + '」，新增文件会自动上传');
+      })
+      .catch(function (err) {
+        // 用户取消选择时无需提示
+        if (err && err.name === 'AbortError') return;
+        toast('无法监听该目录', 'err');
+      });
   }
 
   /** 取文件所在目录（相对路径，无目录时返回空串） */
@@ -1486,6 +1588,8 @@
   $('fileInput').addEventListener('change', function (e) { uploadFiles(e.target.files); e.target.value = ''; });
   // 上传文件夹：保留原有目录结构
   $('pickDirBtn').addEventListener('click', function () { $('dirInput').click(); });
+  // 监听本地目录，新增文件自动上传
+  $('watchDirBtn').addEventListener('click', startWatchDir);
   $('dirInput').addEventListener('change', function (e) {
     var files = e.target.files;
     if (files && files.length) {
