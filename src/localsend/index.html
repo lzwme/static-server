@@ -84,6 +84,9 @@
           <span class="sm:hidden">📥</span><span class="hidden sm:inline">📥 收件箱</span>
           <span id="inboxCount" class="hidden ml-1 text-emerald-400 font-mono"></span>
         </button>
+        <button id="speedBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 hover:bg-slate-700 transition" title="测速：测试当前局域网的传输速度">
+          <span class="sm:hidden">🚀</span><span class="hidden sm:inline">🚀 测速</span>
+        </button>
         <button id="trashBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 hover:bg-slate-700 transition" title="回收站">
           <span class="sm:hidden">🗑</span><span class="hidden sm:inline">🗑 回收站</span>
           <span id="trashCount" class="hidden ml-1 text-amber-400 font-mono"></span>
@@ -844,6 +847,9 @@
   // ---------------------------------------------------------------------------
   var UPLOAD_CONCURRENCY = 3; // 与服务端 maxConcurrent 默认值保持一致
   var MAX_RETRY = 3; // 单个文件最多重试次数
+  var CHUNK_THRESHOLD = 8 * 1024 * 1024; // 超过 8MB 走分片并发上传
+  var CHUNK_SIZE = 4 * 1024 * 1024; // 分片大小 4MB
+  var CHUNK_CONCURRENCY = 3; // 并发分片数（与服务端并发上限一致）
   var uploadQueue = []; // 待上传的文件
   var uploadActive = 0; // 当前进行中的上传数
   var uploadDone = 0; // 已完成（含失败）的数量
@@ -947,6 +953,151 @@
     updateQueueSummary();
   }
 
+  /**
+   * 大文件分片并发上传。
+   *
+   * 单条 HTTP 流在弱网下容易成为瓶颈，把文件切片后并发上传可以让多条流同时传输，
+   * 局域网内大文件的速度提升明显。分片接口服务端已经实现，这里只负责调度。
+   */
+  function uploadByChunks(item, ui) {
+    var file = item.file;
+    var rel = item.rel || file.name;
+    var startTime = Date.now();
+    var uploadId = '';
+
+    /** 上传单个分片，遇到并发限流时退避重试 */
+    function sendChunk(index, chunkSize) {
+      var start = index * chunkSize;
+      var blob = file.slice(start, Math.min(start + chunkSize, file.size));
+      var fd = new FormData();
+      fd.append('chunk', blob, 'chunk-' + index);
+      var attempt = 0;
+      function once() {
+        return fetch(withKey(API + '/chunk/upload?uploadId=' + encodeURIComponent(uploadId) + '&index=' + index), { method: 'POST', body: fd })
+          .then(function (r) {
+            if (r.status === 429 && attempt < MAX_RETRY) {
+              attempt += 1;
+              return new Promise(function (resolve) { setTimeout(resolve, 600 * Math.pow(2, attempt - 1)); }).then(once);
+            }
+            return r.json();
+          })
+          .then(function (j) {
+            if (!j || j.code !== 0) throw new Error((j && j.msg) || '分片上传失败');
+            return j;
+          });
+      }
+      return once();
+    }
+
+    fetch(withKey(API + '/chunk/init'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: rel, size: file.size, chunkSize: CHUNK_SIZE }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || j.code !== 0) throw new Error((j && j.msg) || '初始化分片失败');
+        uploadId = j.data.uploadId;
+        var total = j.data.total;
+        var chunkSize = j.data.chunkSize;
+        var sent = 0;
+        var stopped = false;
+        var next = 0;
+        var active = CHUNK_CONCURRENCY; // 仍在工作的分片任务数
+        ui.statusEl.textContent = '分片上传中（0/' + total + '）';
+
+        /** 合并分片为正式文件 */
+        function merge() {
+          fetch(withKey(API + '/chunk/merge?uploadId=' + encodeURIComponent(uploadId)), { method: 'POST' })
+            .then(function (r) { return r.json(); })
+            .then(function (mj) {
+              if (!mj || mj.code !== 0) throw new Error((mj && mj.msg) || '分片合并失败');
+              var saved = mj.data && mj.data.name ? mj.data.name : rel;
+              var renamed = saved !== rel;
+              ownUploads[saved] = Date.now();
+              toast(renamed ? '上传完成：' + rel + ' → ' + saved + '（同名已自动改名）' : '上传完成：' + rel, 'ok');
+              waitForHighlight([saved]);
+              ui.finish(true);
+            })
+            .catch(function (err) {
+              ui.finish(false, err.message || '分片合并失败');
+            });
+        }
+
+        function worker() {
+          if (stopped) return;
+          if (next >= total) {
+            // 所有分片都领完了，等最后一个任务结束再合并
+            active -= 1;
+            if (active === 0) merge();
+            return;
+          }
+          var index = next++;
+          sendChunk(index, chunkSize)
+            .then(function () {
+              sent += 1;
+              var pct = Math.round((sent / total) * 100);
+              ui.pctEl.textContent = pct + '%';
+              ui.barEl.style.width = pct + '%';
+              var elapsed = (Date.now() - startTime) / 1000;
+              if (elapsed > 0) ui.speedEl.textContent = fmtSize((sent * chunkSize) / elapsed) + '/s';
+              ui.statusEl.textContent = '分片上传中（' + sent + '/' + total + '）';
+              worker();
+            })
+            .catch(function (err) {
+              stopped = true;
+              ui.statusEl.textContent = '分片上传失败';
+              // 清理服务端暂存的分片，避免残留占用磁盘
+              if (uploadId) {
+                fetch(withKey(API + '/chunk/cancel?uploadId=' + encodeURIComponent(uploadId)), { method: 'DELETE' }).catch(function () {});
+              }
+              toast('上传失败：' + rel, 'err');
+              ui.finish(false, err.message || '分片上传失败');
+            });
+        }
+
+        for (var i = 0; i < CHUNK_CONCURRENCY; i++) worker();
+      })
+      .catch(function (err) {
+        ui.statusEl.textContent = '分片上传失败';
+        toast('上传失败：' + rel, 'err');
+        ui.finish(false, err.message || '分片上传失败');
+      });
+  }
+
+  /**
+   * 传输测速：分别测量上传与下载速度。
+   *
+   * 上传方向把一段数据发给服务端并丢弃，下载方向从服务端拉一段固定数据，
+   * 两者都按实际耗时换算成 MB/s，用来判断当前局域网链路质量。
+   */
+  function runSpeedTest() {
+    var MB = 8;
+    toast('正在测速…');
+    var dlStart = Date.now();
+    fetch(withKey(API + '/speed?size=' + MB))
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.arrayBuffer();
+      })
+      .then(function (buf) {
+        var dlMs = Math.max(1, Date.now() - dlStart);
+        var dlSpeed = buf.byteLength / 1024 / 1024 / (dlMs / 1000);
+        var blob = new Blob([new Uint8Array(MB * 1024 * 1024)]);
+        var upStart = Date.now();
+        return fetch(withKey(API + '/speed'), { method: 'POST', body: blob })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            var upMs = Math.max(1, Date.now() - upStart);
+            var upSpeed = (j.data && j.data.bytes ? j.data.bytes / 1024 / 1024 : MB) / (upMs / 1000);
+            toast('测速完成：上传 ' + upSpeed.toFixed(1) + ' MB/s · 下载 ' + dlSpeed.toFixed(1) + ' MB/s', 'ok');
+          });
+      })
+      .catch(function () {
+        toast('测速失败，请稍后再试', 'err');
+      });
+  }
+
   function uploadOne(item, retryCount, onDone) {
     var file = item.file;
     var rel = item.rel || file.name;
@@ -977,6 +1128,11 @@
     var barEl = row.querySelector('.h-full');
     var statusEl = row.querySelector('[data-status]');
     var speedEl = row.querySelector('[data-speed]');
+    // 大文件改走分片并发上传，速度更快
+    if (file.size >= CHUNK_THRESHOLD) {
+      uploadByChunks(item, { pctEl: pctEl, barEl: barEl, statusEl: statusEl, speedEl: speedEl, finish: finish });
+      return;
+    }
     var xhr = new XMLHttpRequest();
     xhr.open('POST', withKey(API + '/upload'));
     var lastLoaded = 0;
@@ -1598,9 +1754,10 @@
     }
     e.target.value = '';
   });
+  // 传输测速
+  $('speedBtn').addEventListener('click', runSpeedTest);
   // 收件箱：只看最近收到的文件
-  $('inboxBtn').addEventListener('click', function () {
-    inboxMode = !inboxMode;
+  $('inboxBtn').addEventListener('click', function () {    inboxMode = !inboxMode;
     if (inboxMode) {
       inboxNewCount = 0;
       // 开启收件箱时顺带申请通知权限（用户主动点击，符合浏览器的授权要求）

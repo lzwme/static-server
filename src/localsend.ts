@@ -628,6 +628,54 @@ export async function initLocalsend(app: Express): Promise<void> {
     res.json({ code: ok ? 0 : 1, msg: ok ? '' : '上传任务不存在' });
   });
 
+  // ---------------------------------------------------------------------------
+  // 传输测速
+  //
+  // 局域网速度受路由器、频段和负载影响很大，用户需要一个直观的方式
+  // 判断当前链路质量：下载方向直接推数据，上传方向接收后立即丢弃。
+  // ---------------------------------------------------------------------------
+
+  // 下载测速：GET /localsend/api/speed?size=10（单位 MB，1~100，默认 10）
+  app.get('/localsend/api/speed', (req: Request, res: Response) => {
+    const mb = Math.min(Math.max(Number(req.query.size) || 10, 1), 100);
+    const size = mb * 1024 * 1024;
+    res.set({
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': String(size),
+      'Cache-Control': 'no-store',
+    });
+    // 固定内容的数据块，循环输出即可，无需生成随机数
+    const block = Buffer.alloc(256 * 1024, 0x61);
+    let sent = 0;
+    const pump = () => {
+      while (sent < size) {
+        const n = Math.min(block.length, size - sent);
+        sent += n;
+        if (!res.write(n === block.length ? block : block.subarray(0, n))) {
+          res.once('drain', pump);
+          return;
+        }
+      }
+      res.end();
+    };
+    pump();
+  });
+
+  // 上传测速：POST /localsend/api/speed（接收请求体并丢弃，不落盘）
+  app.post('/localsend/api/speed', (req: Request, res: Response) => {
+    const start = Date.now();
+    let bytes = 0;
+    req.on('data', (chunk: Buffer) => {
+      bytes += chunk.length;
+    });
+    req.on('end', () => {
+      res.json({ code: 0, data: { bytes, ms: Date.now() - start } });
+    });
+    req.on('error', () => {
+      if (!res.headersSent) res.status(400).json({ code: 1, msg: '测速数据接收失败' });
+    });
+  });
+
   // 下载。dotfiles: 'allow' 以兼容 ~/.static-server 这类隐藏目录作为存储目录
   app.get('/localsend/api/download/*name', (req: Request, res: Response) => {
     const rel = relParam(req);
