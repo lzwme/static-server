@@ -194,7 +194,8 @@ export function createListCache(options: ListCacheOptions): ListCache {
   }
 
   return {
-    list(): FileEntry[] {      const expired = !loaded || Date.now() - lastScan > ttl;
+    list(): FileEntry[] {
+      const expired = !loaded || Date.now() - lastScan > ttl;
       if (expired) {
         misses++;
         scan();

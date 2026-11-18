@@ -57,7 +57,6 @@ interface CentralRecord {
 }
 
 const LOCAL_SIG = 0x04034b50;
-const DESCRIPTOR_SIG = 0x08074b50;
 const CENTRAL_SIG = 0x02014b50;
 const END_SIG = 0x06054b50;
 
@@ -126,7 +125,8 @@ export async function* createZipChunks(entries: ZipEntry[], readFile: (path: str
   // central directory
   const cdStart = offset;
   for (const record of central) {
-    const header = Buffer.alloc(46);    header.writeUInt32LE(CENTRAL_SIG, 0);
+    const header = Buffer.alloc(46);
+    header.writeUInt32LE(CENTRAL_SIG, 0);
     header.writeUInt16LE(20, 4); // version made by
     header.writeUInt16LE(20, 6); // version needed
     header.writeUInt16LE(0x0008, 8); // flag

@@ -62,17 +62,20 @@ export function createGuard(options: GuardOptions = {}): Guard {
   const hits = new Map<string, number[]>();
 
   // 定期清理过期数据，避免长期运行内存增长
-  const timer = setInterval(() => {
-    const now = Date.now();
-    for (const [ip, list] of hits) {
-      const valid = list.filter((t) => now - t < windowMs);
-      if (valid.length) hits.set(ip, valid);
-      else hits.delete(ip);
-    }
-    for (const [ip, count] of concurrent) {
-      if (count <= 0) concurrent.delete(ip);
-    }
-  }, Math.max(windowMs, 30_000));
+  const timer = setInterval(
+    () => {
+      const now = Date.now();
+      for (const [ip, list] of hits) {
+        const valid = list.filter((t) => now - t < windowMs);
+        if (valid.length) hits.set(ip, valid);
+        else hits.delete(ip);
+      }
+      for (const [ip, count] of concurrent) {
+        if (count <= 0) concurrent.delete(ip);
+      }
+    },
+    Math.max(windowMs, 30_000),
+  );
   timer.unref?.();
 
   const requireToken: Guard['requireToken'] = (req, res, next) => {
