@@ -9,7 +9,7 @@
  *  - DELETE /localsend/api/delete/:name    删除
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
-import { basename, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { color } from 'console-log-colors';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
@@ -17,24 +17,18 @@ import multer from 'multer';
 import { getConfig } from './config';
 import { logger } from './get-logger';
 import { createGuard } from './lib/localsend-guard';
+import { listFiles, resolveInDir, safeRelPath } from './lib/localsend-path';
 import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
 import { getIp } from './lib/utils';
 
 /**
  * 前端页面单文件路径（相对本模块）。
- * 构建后页面位于 dist/localsend/index.html；dev（ts-node）运行时位于 src/localsend/index.html。
+ * 构建后页面位于 dist/localsend/index.html；dev（bun）运行时位于 src/localsend/index.html。
  */
 const PAGE_REL_PATH = './localsend/index.html';
 
 /** 页面静态资源目录（相对本模块），与 PAGE_REL_PATH 同级 */
 const PAGE_DIR = './localsend';
-
-/** 去除文件名中的路径分隔符，防止目录穿越。非法返回空串 */
-function safeName(name?: unknown) {
-  const n = basename(String(name || '').trim());
-  if (!n || n === '.' || n === '..' || n.includes('/') || n.includes('\\')) return '';
-  return n;
-}
 
 /** 严格解码字节，编码不匹配时返回 null */
 function decodeStrict(bytes: Buffer, encoding: string): string | null {
@@ -94,17 +88,31 @@ export function repairLocalsendNames(dir: string): [string, string][] {
   return renamed;
 }
 
-/** 同名文件自动追加 _1/_2 后缀 */
-function uniqueName(targetDir: string, name: string) {
-  const ext = extname(name);
-  const base = name.slice(0, name.length - ext.length);
-  let finalName = name;
+/**
+ * 同名文件自动追加 _1/_2 后缀（支持子目录，相对路径用 `/` 分隔）
+ */
+function uniqueName(targetDir: string, relName: string): string {
+  const rel = safeRelPath(relName);
+  if (!rel) return '';
+  const parts = rel.split('/');
+  const fileName = parts.pop() as string;
+  const subDir = join(targetDir, ...parts);
+  const ext = extname(fileName);
+  const base = fileName.slice(0, fileName.length - ext.length);
+  let finalName = fileName;
   let i = 1;
-  while (existsSync(join(targetDir, finalName))) {
+  while (existsSync(join(subDir, finalName))) {
     finalName = `${base}_${i}${ext}`;
     i += 1;
   }
-  return finalName;
+  return parts.length ? `${parts.join('/')}/${finalName}` : finalName;
+}
+
+/** 取请求中的相对路径参数（支持通配符路由） */
+function relParam(req: Request, key = 'name'): string {
+  const value = (req.params as Record<string, unknown>)[key];
+  const raw = Array.isArray(value) ? value.join('/') : value;
+  return safeRelPath(raw);
 }
 
 /**
@@ -209,24 +217,11 @@ export async function initLocalsend(app: Express): Promise<void> {
     }),
   );
 
-  // 文件列表
+  // 文件列表（递归返回所有子目录下的文件，name 为相对路径）
   app.get('/localsend/api/list', (req: Request, res: Response) => {
     const sort = String(req.query.sort || 'time');
     const asc = String(req.query.order || 'desc') !== 'desc';
-    const list = readdirSync(dir)
-      .map((name) => {
-        const full = join(dir, name);
-        const stat = statSync(full);
-        return {
-          name,
-          size: stat.size,
-          mtime: stat.mtimeMs,
-          ext: extname(name).slice(1),
-          isDir: stat.isDirectory(),
-        };
-      })
-      // 过滤上传过程中的临时文件，避免列表里出现无扩展名的哈希文件名
-      .filter((item) => !item.isDir && !isTempFileName(item.name));
+    const list = listFiles(dir, (rel) => !isTempFileName(rel.slice(rel.lastIndexOf('/') + 1)));
     list.sort((a, b) => (sort === 'size' ? (asc ? a.size - b.size : b.size - a.size) : asc ? a.mtime - b.mtime : b.mtime - a.mtime));
     res.json({ code: 0, data: list });
   });
@@ -249,6 +244,8 @@ export async function initLocalsend(app: Express): Promise<void> {
       },
     }),
     limits: { fileSize: maxSize, files: 200 },
+    // 保留上传文件名的完整相对路径（上传文件夹时可保留目录结构）
+    preservePath: true,
     // 显式声明按 latin1 读取 Content-Disposition 参数，保留文件名的原始字节，
     // 再由 decodeUploadName 按 utf-8 / gb18030 解码，避免中文文件名乱码
     defParamCharset: 'latin1',
@@ -310,8 +307,14 @@ export async function initLocalsend(app: Express): Promise<void> {
 
       for (const f of files) {
         try {
-          const name = uniqueName(dir, safeName(decodeUploadName(f.originalname)) || `file_${Date.now()}`);
-          renameSync(f.path, join(dir, name));
+          // 文件名可能是带目录的相对路径（上传文件夹时保留结构）
+          const rel = safeRelPath(decodeUploadName(f.originalname)) || `file_${Date.now()}`;
+          const name = uniqueName(dir, rel);
+          const target = resolveInDir(dir, name);
+          if (!target) throw new Error(`非法的文件路径：${rel}`);
+          const subDir = dirname(target);
+          if (!existsSync(subDir)) mkdirSync(subDir, { recursive: true });
+          renameSync(f.path, target);
           temps?.delete(f.path);
           results.push({ name, size: f.size });
         } catch (err) {
@@ -338,36 +341,36 @@ export async function initLocalsend(app: Express): Promise<void> {
   );
 
   // 下载。dotfiles: 'allow' 以兼容 ~/.static-server 这类隐藏目录作为存储目录
-  app.get('/localsend/api/download/:name', (req: Request, res: Response) => {
-    const name = safeName(req.params.name);
-    if (!name) return void res.status(400).json({ code: 1, msg: '非法的文件名' });
-    const filePath = resolve(dir, name);
-    if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+  app.get('/localsend/api/download/*name', (req: Request, res: Response) => {
+    const rel = relParam(req);
+    if (!rel) return void res.status(400).json({ code: 1, msg: '非法的文件路径' });
+    const filePath = resolveInDir(dir, rel);
+    if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) {
       return void res.status(404).json({ code: 1, msg: '文件不存在' });
     }
-    res.download(filePath, name, { dotfiles: 'allow' });
+    res.download(filePath, basename(rel), { dotfiles: 'allow' });
   });
 
   // 预览（inline 方式返回，浏览器可直读图片/文本等）
-  app.get('/localsend/api/preview/:name', (req: Request, res: Response) => {
-    const name = safeName(req.params.name);
-    if (!name) return void res.status(400).json({ code: 1, msg: '非法的文件名' });
-    const filePath = resolve(dir, name);
-    if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+  app.get('/localsend/api/preview/*name', (req: Request, res: Response) => {
+    const rel = relParam(req);
+    if (!rel) return void res.status(400).json({ code: 1, msg: '非法的文件路径' });
+    const filePath = resolveInDir(dir, rel);
+    if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) {
       return void res.status(404).json({ code: 1, msg: '文件不存在' });
     }
     res.sendFile(filePath, {
       dotfiles: 'allow',
-      headers: { 'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(name)}` },
+      headers: { 'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(basename(rel))}` },
     });
   });
 
   // 删除
-  app.delete('/localsend/api/delete/:name', (req: Request, res: Response) => {
-    const name = safeName(req.params.name);
-    if (!name) return void res.status(400).json({ code: 1, msg: '非法的文件名' });
-    const filePath = resolve(dir, name);
-    if (!existsSync(filePath)) return void res.status(404).json({ code: 1, msg: '文件不存在' });
+  app.delete('/localsend/api/delete/*name', (req: Request, res: Response) => {
+    const rel = relParam(req);
+    if (!rel) return void res.status(400).json({ code: 1, msg: '非法的文件路径' });
+    const filePath = resolveInDir(dir, rel);
+    if (!filePath || !existsSync(filePath)) return void res.status(404).json({ code: 1, msg: '文件不存在' });
     rmSync(filePath);
     res.json({ code: 0 });
   });
