@@ -60,9 +60,21 @@ async function upload(base, name, content, query = '') {
   return { status: resp.status, json: await resp.json() };
 }
 
-/** 列出服务端文件 */
-async function listFiles(base, query = '') {
+/** 请求文件列表，返回完整的分页信息（items / total / page / pageSize / totalPages） */
+async function listPage(base, query = '') {
   const resp = await fetch(`${base}/localsend/api/list${query}`);
+  return (await resp.json()).data;
+}
+
+/** 只取当前页的文件条目 */
+async function listFiles(base, query = '') {
+  const data = await listPage(base, query);
+  return data.items || [];
+}
+
+/** 请求筛选选项（目录 / 扩展名） */
+async function listFacets(base) {
+  const resp = await fetch(`${base}/localsend/api/facets`);
   return (await resp.json()).data;
 }
 
@@ -71,4 +83,4 @@ function removeDir(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-module.exports = { tempDir, useTempConfig, startServer, upload, listFiles, removeDir };
+module.exports = { tempDir, useTempConfig, startServer, upload, listFiles, listPage, listFacets, removeDir };

@@ -2,11 +2,15 @@
  * LocalSend 局域网文件传输服务端模块
  * 路由：
  *  - GET    /localsend                   页面
- *  - GET    /localsend/api/list          文件列表（支持 ?sort=time|size&order=asc|desc）
+ *  - GET    /localsend/api/list          文件列表（分页 + 搜索 + 筛选 + 排序）
+ *  - GET    /localsend/api/facets        筛选选项（目录 / 扩展名及各自条目数）
  *  - POST   /localsend/api/upload        多文件上传（multipart，字段名 files）
  *  - GET    /localsend/api/download/:name  下载（attachment）
  *  - GET    /localsend/api/preview/:name   预览（inline）
  *  - DELETE /localsend/api/delete/:name    删除
+ *  - POST   /localsend/api/rename        重命名 / 移动单个文件
+ *  - POST   /localsend/api/move          批量移动到指定目录
+ *  - POST   /localsend/api/rename-batch  按规则批量重命名
  */
 
 import { randomBytes } from 'node:crypto';
@@ -22,6 +26,7 @@ import { createChunkStore, MAX_CHUNK_SIZE } from './lib/localsend-chunk';
 import { createCleaner } from './lib/localsend-cleaner';
 import { createGuard } from './lib/localsend-guard';
 import { resolveInDir, safeRelPath } from './lib/localsend-path';
+import { collectDirs, collectExts, filterEntries, paginate, parseListQuery, sortEntries } from './lib/localsend-query';
 import { createShareStore } from './lib/localsend-share';
 import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
 import { createTrash } from './lib/localsend-trash';
@@ -392,13 +397,29 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     next();
   });
 
+  // 文件列表（分页 + 搜索 + 筛选 + 排序）
+  //
+  // 文件多的时候一次性返回全量会让手机端卡顿，搜索也只能在前端做。
+  // 这里把关键词、目录、扩展名、时间窗等条件全部下推到服务端，
+  // 只返回当前页，同时给出筛选后的总数，供分页控件展示。
   app.get('/localsend/api/list', (req: Request, res: Response) => {
-    const sort = String(req.query.sort || 'time');
-    const asc = String(req.query.order || 'desc') !== 'desc';
-    // 复制一份再排序，避免污染缓存中的顺序
-    const list = listCache.list().slice();
-    list.sort((a, b) => (sort === 'size' ? (asc ? a.size - b.size : b.size - a.size) : asc ? a.mtime - b.mtime : b.mtime - a.mtime));
-    res.json({ code: 0, data: list });
+    const query = parseListQuery(req.query as Record<string, unknown>);
+    const all = listCache.list();
+    const filtered = filterEntries(all, query);
+    const sorted = sortEntries(filtered, query.sort, query.asc);
+    const result = paginate(sorted, query.page, query.pageSize);
+    // allTotal 是不带任何筛选条件的文件总数，前端用来显示「筛选 N / 共 M」
+    res.json({ code: 0, data: { ...result, allTotal: all.length } });
+  });
+
+  // 筛选选项（目录 / 扩展名）
+  //
+  // 服务端分页之后前端拿不到全量文件，无法再自己枚举目录，
+  // 这里单独提供一个接口把可选项和各自的条目数返回给页面。
+  app.get('/localsend/api/facets', (_req: Request, res: Response) => {
+    const all = listCache.list();
+    const { dirs, rootCount } = collectDirs(all);
+    res.json({ code: 0, data: { dirs, rootCount, exts: collectExts(all), total: all.length } });
   });
 
   // 多文件上传

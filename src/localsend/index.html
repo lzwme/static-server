@@ -99,9 +99,18 @@
         <select id="dirSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 outline-none cursor-pointer" title="按所在目录筛选">
           <option value="">全部目录</option>
         </select>
+        <select id="extSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 outline-none cursor-pointer" title="按文件类型筛选">
+          <option value="">全部类型</option>
+        </select>
         <select id="sortSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 outline-none cursor-pointer">
           <option value="time">按时间排序</option>
           <option value="size">按大小排序</option>
+        </select>
+        <select id="pageSizeSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 outline-none cursor-pointer" title="每页显示条数">
+          <option value="20">20 条/页</option>
+          <option value="50">50 条/页</option>
+          <option value="100">100 条/页</option>
+          <option value="200">200 条/页</option>
         </select>
         <button id="orderBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 hover:bg-slate-700 transition">↓ 降序</button>
       </div>
@@ -125,10 +134,17 @@
     </div>
     <div id="fileList" class="bg-slate-900 border border-slate-800 rounded-2xl divide-y divide-slate-800"></div>
     <div id="emptyTip" class="hidden text-center text-slate-500 py-16">暂无文件，上传第一个文件开始传输吧</div>
-    <div id="pager" class="hidden mt-3 flex items-center justify-center gap-2 text-xs sm:text-sm">
-      <button id="prevPage" class="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition">上一页</button>
-      <span id="pageInfo" class="text-slate-400 font-mono"></span>
-      <button id="nextPage" class="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition">下一页</button>
+    <div id="pager" class="hidden mt-3 flex items-center justify-center gap-1.5 sm:gap-2 text-xs sm:text-sm flex-wrap">
+      <button id="firstPage" class="px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition" title="第一页">« 首页</button>
+      <button id="prevPage" class="px-2.5 sm:px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition">上一页</button>
+      <span id="pageInfo" class="text-slate-400 font-mono px-1 whitespace-nowrap"></span>
+      <button id="nextPage" class="px-2.5 sm:px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition">下一页</button>
+      <button id="lastPage" class="px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition" title="最后一页">末页 »</button>
+      <span class="flex items-center gap-1">
+        <input id="jumpInput" type="number" min="1" inputmode="numeric" placeholder="页码"
+          class="w-14 sm:w-16 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 outline-none focus:border-emerald-500/60" />
+        <button id="jumpBtn" class="px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 transition">跳转</button>
+      </span>
     </div>
   </section>
 </div>
