@@ -80,8 +80,8 @@
       <button id="batchShare" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量分享">
         <span class="sm:hidden">🔗</span><span class="hidden sm:inline">🔗 批量分享</span>
       </button>
-      <button id="batchDownload" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量下载">
-        <span class="sm:hidden">📥</span><span class="hidden sm:inline">📥 批量下载</span>
+      <button id="batchDownload" disabled class="px-2 py-1 rounded text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量下载（打包为 zip）">
+        <span class="sm:hidden">📥</span><span class="hidden sm:inline">📥 打包下载</span>
       </button>
       <button id="batchDelete" disabled class="px-2 py-1 rounded text-red-400 hover:bg-red-500/10 border border-red-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition shrink-0" title="批量删除">
         <span class="sm:hidden">🗑</span><span class="hidden sm:inline">🗑 批量删除</span>
@@ -585,6 +585,27 @@
     xhrDownload(name);
   }
 
+  /**
+   * 批量下载：把选中的文件打包成 zip 下载。
+   *
+   * 打包在服务端流式完成，浏览器只接收一个 zip 流，内存占用恒定，
+   * 不会因为文件多或文件大而失败。
+   */
+  function downloadZip(names) {
+    var url = withKey(API + '/zip?names=' + encodeURIComponent(names.join(',')));
+    var stamp = new Date();
+    var p = function (x) { return String(x).padStart(2, '0'); };
+    var fname = 'localsend-' + stamp.getFullYear() + p(stamp.getMonth() + 1) + p(stamp.getDate()) + '-' + p(stamp.getHours()) + p(stamp.getMinutes()) + '.zip';
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { a.remove(); }, 0);
+    toast('正在打包下载 ' + names.length + ' 个文件…', 'ok');
+  }
+
   var imgExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'];
   var textExts = ['txt', 'md', 'json', 'js', 'ts', 'html', 'css', 'xml', 'log', 'csv', 'yml', 'yaml', 'ini', 'conf'];
   function previewFile(name) {
@@ -716,23 +737,12 @@
   $('batchDownload').addEventListener('click', function () {
     var names = Object.keys(selected).filter(function (n) { return selected[n]; });
     if (!names.length) return;
-    toast('开始批量下载 ' + names.length + ' 个文件');
-    var i = 0;
-    // 严格串行：上一个文件下载完成（或原生下载已发起）后再下载下一个，
-    // 避免多个 blob 同时驻留内存导致大文件批量下载失败
-    function next() {
-      if (i >= names.length) { toast('批量下载完成（共 ' + names.length + ' 个）', 'ok'); return; }
-      var name = names[i];
-      i += 1;
-      if (fileSizeOf(name) > BLOB_LIMIT) {
-        nativeDownload(name);
-        // 间隔发起，避免浏览器把连续下载判定为批量自动下载而拦截
-        setTimeout(next, 1500);
-        return;
-      }
-      xhrDownload(name, function () { setTimeout(next, 300); });
+    // 多个文件打成一个 zip 由服务端流式打包，浏览器只需下载一次
+    if (names.length === 1) {
+      downloadFile(names[0]);
+      return;
     }
-    next();
+    downloadZip(names);
   });
   $('batchDelete').addEventListener('click', function () {
     var names = Object.keys(selected).filter(function (n) { return selected[n]; });
