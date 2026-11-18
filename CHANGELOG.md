@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.0.11](https://github.com/lzwme/static-server/compare/v0.0.10...v0.0.11) (2026-11-18)
+
+
+### Bug Fixes
+
+* **localsend:** 修复上传中文文件名乱码问题 ([bc51292](https://github.com/lzwme/static-server/commit/bc51292ffe505625ef7b6986bffa07957a987f0f))
+* **php-proxy:** 改用 WHATWG URL API,消除 url.parse 弃用警告 ([257384f](https://github.com/lzwme/static-server/commit/257384f4e43c569498d98f9a3c74e0f5ead0deda))
+
 ### [0.0.10](https://github.com/lzwme/static-server/compare/v0.0.9...v0.0.10) (2026-07-31)
 
 
