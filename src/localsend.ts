@@ -17,10 +17,11 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import multer from 'multer';
 import { getConfig } from './config';
 import { logger } from './get-logger';
+import { createListCache } from './lib/localsend-cache';
 import { createChunkStore, MAX_CHUNK_SIZE } from './lib/localsend-chunk';
 import { createCleaner } from './lib/localsend-cleaner';
 import { createGuard } from './lib/localsend-guard';
-import { listFiles, resolveInDir, safeRelPath } from './lib/localsend-path';
+import { resolveInDir, safeRelPath } from './lib/localsend-path';
 import { createShareStore } from './lib/localsend-share';
 import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
 import { createWebDavHandler } from './lib/localsend-webdav';
@@ -319,10 +320,26 @@ export async function initLocalsend(app: Express): Promise<void> {
   );
 
   // 文件列表（递归返回所有子目录下的文件，name 为相对路径）
+  // 使用内存缓存 + fs.watch 增量更新，避免大目录每次请求都全量扫描
+  const listCache = createListCache({
+    dir,
+    ttl: 5 * 60 * 1000,
+    filter: (rel) => !isTempFileName(rel.slice(rel.lastIndexOf('/') + 1)),
+  });
+
+  // 写操作完成后让列表缓存失效，保证下次请求能看到最新文件
+  app.use('/localsend/api', (req: Request, res: Response, next: NextFunction) => {
+    if (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE') {
+      res.on('finish', () => listCache.invalidate());
+    }
+    next();
+  });
+
   app.get('/localsend/api/list', (req: Request, res: Response) => {
     const sort = String(req.query.sort || 'time');
     const asc = String(req.query.order || 'desc') !== 'desc';
-    const list = listFiles(dir, (rel) => !isTempFileName(rel.slice(rel.lastIndexOf('/') + 1)));
+    // 复制一份再排序，避免污染缓存中的顺序
+    const list = listCache.list().slice();
     list.sort((a, b) => (sort === 'size' ? (asc ? a.size - b.size : b.size - a.size) : asc ? a.mtime - b.mtime : b.mtime - a.mtime));
     res.json({ code: 0, data: list });
   });
