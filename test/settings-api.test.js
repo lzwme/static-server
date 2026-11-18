@@ -41,7 +41,7 @@ describe('LocalSend 运行时设置', () => {
     settingsFile = path.join(dir, 'settings.json');
     // 把运行时设置文件放到临时目录，避免污染真实用户配置
     process.env.SS_LOCALSEND_SETTINGS = settingsFile;
-    server = await startServer(dir, { password: 'admin-pwd' });
+    server = await startServer(dir, { password: 'admin-pwd', trashDays: 2 });
     base = server.base;
   });
 
@@ -169,7 +169,29 @@ describe('LocalSend 运行时设置', () => {
     const { data } = await getSettings(base, token);
     const concurrent = data.items.find((i) => i.key === 'maxConcurrent');
     assert.equal(concurrent.source, 'config');
-    assert.notEqual(concurrent.value, 7);
+    // 配置文件里没有这一项，回到默认值 3
+    assert.equal(concurrent.value, 3);
+  });
+
+  it('恢复默认时同样走默认值归一化', async () => {
+    const token = await login(base, 'new-pwd');
+    // 先改成 5
+    await call(base, '/settings', {
+      method: 'POST',
+      headers: { 'X-Localsend-Session': token },
+      body: JSON.stringify({ changes: { trashDays: 5 } }),
+    });
+    const changed = await getSettings(base, token);
+    assert.equal(changed.data.items.find((i) => i.key === 'trashDays').value, 5);
+    // 恢复默认后应回到配置文件里的 2，而不是 0
+    await call(base, '/settings/trashDays', {
+      method: 'DELETE',
+      headers: { 'X-Localsend-Session': token },
+    });
+    const { data } = await getSettings(base, token);
+    const trash = data.items.find((i) => i.key === 'trashDays');
+    assert.equal(trash.source, 'config');
+    assert.equal(trash.value, 2);
   });
 
   it('非法取值会被拒绝', async () => {

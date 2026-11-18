@@ -405,6 +405,45 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     return `${text.slice(0, 4)}****`;
   }
 
+  /**
+   * 从配置文件里的原始值算出最终生效的值（含默认值归一化）。
+   * 恢复默认设置时回到这里，而不是直接用未归一化的原始值。
+   */
+  function configValueOf(key: SettingKey): unknown {
+    const raw = (ls as unknown as Record<string, unknown>)[key];
+    switch (key) {
+      case 'token':
+        return String(raw || '');
+      case 'password':
+        return String(raw || '');
+      case 'visitorPassword':
+        return String(raw || '');
+      case 'sessionTtl':
+        return Number(raw) || 24 * 60 * 60 * 1000;
+      case 'maxSize':
+        return raw === undefined ? 1024 * 1024 * 1024 : Number(raw);
+      case 'maxTotalSize':
+        return Number(raw) || 0;
+      case 'maxConcurrent':
+        return Number(raw ?? 3);
+      case 'rateLimit':
+        return {
+          windowMs: Number((raw as { windowMs?: number })?.windowMs) || 60_000,
+          max: Number((raw as { max?: number })?.max ?? 120),
+        };
+      case 'blockExtensions':
+        return [...((raw as string[]) || DEFAULT_BLOCK_EXTENSIONS)];
+      case 'trashDays':
+        return Number(raw ?? 1);
+      case 'autoCleanDays':
+        return Number(raw) || 0;
+      case 'autoCleanMaxSize':
+        return Number(raw) || 0;
+      default:
+        return raw;
+    }
+  }
+
   /** 组装当前生效的设置项 */
   function buildSettingsPayload() {
     const items = (Object.keys(SETTING_DEFS) as SettingKey[]).map((key) => {
@@ -524,9 +563,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     const key = String(req.params.key || '') as SettingKey;
     if (!(key in SETTING_DEFS)) return void res.status(400).json({ code: 1, msg: '未知的配置项' });
     settings.clear(key);
-    const baseValue = (ls as unknown as Record<string, unknown>)[key];
-    const { value } = normalizeSetting(key, baseValue ?? '');
-    applySetting(key, value, req);
+    // 回到配置文件里的值（同样要走默认值归一化，否则未设置的项会变成 0）
+    applySetting(key, configValueOf(key), req);
     logger.log(color.green('LocalSend 设置 :'.padStart(15, ' ')), color.cyanBright(`已恢复默认：${key}`));
     res.json({ code: 0, data: { applied: [key], ...buildSettingsPayload() } });
   });
