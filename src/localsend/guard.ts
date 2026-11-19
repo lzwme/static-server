@@ -123,10 +123,7 @@ export function createGuard(options: GuardOptions = {}): Guard {
    * 每个桶有自己的计数表，互不影响；
    * 这样「分片请求多」不会挤占「列表/登录」的预算。
    */
-  const createRateLimiter = (
-    bucket: Map<string, number[]>,
-    readLimit: () => { windowMs: number; max: number },
-  ): Guard['rateLimit'] => {
+  const createRateLimiter = (bucket: Map<string, number[]>, readLimit: () => { windowMs: number; max: number }): Guard['rateLimit'] => {
     return (req, res, next) => {
       const { windowMs, max: maxRequests } = readLimit();
       if (!maxRequests || maxRequests <= 0) return next();

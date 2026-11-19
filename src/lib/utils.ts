@@ -64,14 +64,12 @@ export function isLoopbackAddress(address: string): boolean {
  * 纯函数，便于单测。
  */
 export function rankIpCandidates(list: IpCandidate[]): IpCandidate[] {
-  return list
-    .slice()
-    .sort((a, b) => {
-      const rankA = privateRank(a.address) + (VIRTUAL_IFACE_RE.test(a.iface) ? 10 : 0);
-      const rankB = privateRank(b.address) + (VIRTUAL_IFACE_RE.test(b.iface) ? 10 : 0);
-      if (rankA !== rankB) return rankA - rankB;
-      return a.address.localeCompare(b.address);
-    });
+  return list.slice().sort((a, b) => {
+    const rankA = privateRank(a.address) + (VIRTUAL_IFACE_RE.test(a.iface) ? 10 : 0);
+    const rankB = privateRank(b.address) + (VIRTUAL_IFACE_RE.test(b.iface) ? 10 : 0);
+    if (rankA !== rankB) return rankA - rankB;
+    return a.address.localeCompare(b.address);
+  });
 }
 
 /** 收集本机全部非回环 IPv4 地址（已按可达概率排序，去重） */

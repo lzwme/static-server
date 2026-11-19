@@ -3,25 +3,19 @@
   var API = '/localsend/api';
   var $ = function (id) { return document.getElementById(id); };
   /**
-   * 会话令牌：口令登录或用访问令牌换取后，由服务端签发。
+   * 会话令牌只放在请求头里。
    *
-   * 它只放在请求头里，不进 URL；只有下载链接、SSE、媒体预览这类
-   * 无法带自定义请求头的场景，才用 ?session= 带上
-   * （会话可撤销、会过期，与站点级访问令牌不是一回事）。
+   * 下载、预览、打包、事件流这几类请求由 <img> / <a> / EventSource 发起，
+   * 带不了自定义请求头；以前是把会话拼进 URL（?session=），
+   * 结果「复制链接」等于把自己的会话发出去，URL 还会留在历史与日志里。
+   * 现在改为「先换一张短期票据，再用票据访问」，见下面的 issueTicket。
+   *
+   * 服务端配置了口令时，危险操作（删除、整理、撤销分享）需要管理员身份；
+   * 上传与分享需要访客以上身份，但没有配置访客口令时任何人都可以上传下载。
+   * 口令与访问令牌都不以明文提交：客户端用服务端公开的盐值派生出摘要，
+   * 服务端只比对摘要（见 crypto.js 与服务端的 secret.ts）。
+   * 会话令牌存在 localStorage，由服务端内存维护，服务重启后失效，需要重新登录。
    */
-  function withSession(url) {
-    if (!sessionToken) return url;
-    return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'session=' + encodeURIComponent(sessionToken);
-  }
-  // ---------------------------------------------------------------------------
-  // 身份与会话
-  //
-  // 服务端配置了口令时，危险操作（删除、整理、撤销分享）需要管理员身份；
-  // 上传与分享需要访客以上身份，但没有配置访客口令时任何人都可以上传下载。
-  // 口令与访问令牌都不以明文提交：客户端用服务端公开的盐值派生出摘要，
-  // 服务端只比对摘要（见 crypto.js 与服务端的 secret.ts）。
-  // 会话令牌存在 localStorage，由服务端内存维护，服务重启后失效，需要重新登录。
-  // ---------------------------------------------------------------------------
   var SESSION_STORAGE_KEY = 'localsend.session';
   var TOKEN_STORAGE_KEY = 'localsend.token';
   /** 登录方式：password（口令）/ token（访问令牌）。会话失效时据此提示正确的重新认证入口 */
@@ -181,6 +175,45 @@
       }
       return r;
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // 短期访问票据
+  //
+  // 下载 / 预览 / 打包 / 事件流的 URL 由浏览器标签直接发起，带不了请求头。
+  // 用票据替代「把会话拼进 URL」：票据只对指定文件有效、几分钟过期，
+  // 即使被复制出去，影响面也远小于会话令牌。
+  // ---------------------------------------------------------------------------
+
+  /** 换一张票据 */
+  function issueTicket(scope, names) {
+    return apiFetch(API + '/ticket', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: scope, names: names || [] }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) throw new Error(json.msg || '获取访问票据失败');
+        return json.data;
+      });
+  }
+
+  /** 生成带票据的 URL：path 为票据令牌之后的路径片段 */
+  function ticketUrl(scope, names, path) {
+    return issueTicket(scope, names).then(function (data) {
+      return location.origin + API + '/t/' + encodeURIComponent(data.token) + path;
+    });
+  }
+
+  /** 下载地址（票据版） */
+  function downloadUrl(name) {
+    return ticketUrl('download', [name], '/download/' + encodeURIComponent(name));
+  }
+
+  /** 预览地址（票据版） */
+  function previewUrl(name) {
+    return ticketUrl('preview', [name], '/preview/' + encodeURIComponent(name));
   }
 
   /** 角色的中文名称 */
@@ -1350,6 +1383,9 @@
     notifySystem(fresh);
   }
 
+  /** 事件流连接代号：异步换票期间可能已经重新连接，旧回调要作废 */
+  var eventsGeneration = 0;
+
   /** 订阅服务端文件变更事件 */
   function connectEvents() {
     if (!window.EventSource) return;
@@ -1357,39 +1393,58 @@
     if (authBlocked) return;
     // 已有连接时先断开，避免重复订阅
     closeEvents();
-    try {
-      eventSource = new EventSource(withSession(API + '/events'));
-    } catch (e) {
-      return;
-    }
-    eventSource.addEventListener('changed', function (e) {
-      var payload = null;
-      try {
-        payload = JSON.parse(e.data);
-      } catch (err) {
-        return;
-      }
-      handleIncoming((payload && payload.names) || []);
-    });
-    /**
-     * 连接断开时浏览器会按 retry 间隔自动重连。
-     *
-     * 那是服务端管不到的一条请求流：如果会话已经失效，
-     * 每次重连都只会再拿一个 401，很快就把频率限制打满，
-     * 连正常请求都被牵连。所以这里先探测一次会话状态，
-     * 确认失效就断开并进入统一的重新认证流程。
-     */
-    eventSource.onerror = function () {
-      if (authBlocked) {
-        closeEvents();
-        return;
-      }
-      var now = Date.now();
-      // 限制探测频率：断线可能连续触发多次
-      if (now - sseProbeAt < 5000) return;
-      sseProbeAt = now;
-      refreshSession();
-    };
+    var generation = ++eventsGeneration;
+    // EventSource 带不了请求头，用短期票据代替把会话写进 URL
+    ticketUrl('events', [], '/events')
+      .then(function (url) {
+        // 换票期间可能已经断线重连或退出登录，旧请求直接作废
+        if (generation !== eventsGeneration || authBlocked) return;
+        try {
+          eventSource = new EventSource(url);
+        } catch (e) {
+          return;
+        }
+        eventSource.addEventListener('changed', function (e) {
+          var payload = null;
+          try {
+            payload = JSON.parse(e.data);
+          } catch (err) {
+            return;
+          }
+          handleIncoming((payload && payload.names) || []);
+        });
+        /**
+         * 连接断开时浏览器会按 retry 间隔自动重连。
+         *
+         * 票据到期或连接被拒时浏览器会彻底放弃（readyState = CLOSED），
+         * 这时才重新换票并重建连接；仍在重连中（CONNECTING）就交给浏览器，
+         * 避免每次抖动都多发一次请求。
+         *
+         * 如果是因为会话失效导致的拒绝，先探测一次会话状态，
+         * 确认失效就进入统一的重新认证流程（清会话、停后台任务、提示登录）。
+         */
+        eventSource.onerror = function () {
+          if (authBlocked) {
+            closeEvents();
+            return;
+          }
+          if (eventSource && eventSource.readyState !== 2) return;
+          var now = Date.now();
+          // 限制重建频率：断线可能连续触发多次
+          if (now - sseProbeAt < 5000) return;
+          sseProbeAt = now;
+          refreshSession().then(function (ok) {
+            if (ok) connectEvents();
+          });
+        };
+      })
+      .catch(function () {
+        // 换票失败（比如服务端刚重启）：稍后再试，不打扰用户
+        if (authBlocked) return;
+        setTimeout(function () {
+          if (!authBlocked && generation === eventsGeneration) connectEvents();
+        }, 5000);
+      });
   }
 
   /**
@@ -1399,6 +1454,8 @@
    * 未授权的重连很快就会把接口频率限制打满，连正常请求都会被牵连。
    */
   function closeEvents() {
+    // 让仍在换票过程中的连接尝试作废
+    eventsGeneration += 1;
     if (!eventSource) return;
     try {
       eventSource.close();
@@ -1519,7 +1576,8 @@
           btn('预览', 'preview', false, '👁') + btn('下载', 'download', false, '⬇️') +
           (canWrite() ? btn('分享', 'share', false, '🔗') : '') +
           (canSystemShare() ? btn('系统分享', 'syshare', false, '📤') : '') +
-          btn('复制', 'copy', false, '📋') + btn('扫码', 'qr', false, '📱') +
+          // 扫码与分享同源：都是生成免登录的分享链接，不再暴露带凭据的直链
+          (canWrite() ? btn('扫码分享', 'qr', false, '📱') : '') +
           // 整理与删除属于危险操作，只有管理员能看到
           (isAdmin() ? btn('重命名', 'rename', false, '✏️') + btn('移动', 'move', false, '📂') + btn('删除', 'delete', true, '🗑') : '') +
         '</div>';
@@ -1913,7 +1971,7 @@
       return;
     }
     var xhr = new XMLHttpRequest();
-    xhr.open('POST', withSession(API + '/upload'));
+    xhr.open('POST', API + '/upload');
     // 上传需要访客以上权限，会话令牌随请求头带上
     if (sessionToken) xhr.setRequestHeader('X-Localsend-Session', sessionToken);
     var lastLoaded = 0;
@@ -2008,51 +2066,70 @@
     return 0;
   }
 
-  // 原生下载：由浏览器直接下载 URL，不经过 XHR，内存占用恒定
-  function nativeDownload(name) {
+  /** 用隐藏链接触发浏览器下载 */
+  function triggerDownload(url, name) {
     var a = document.createElement('a');
-    a.href = withSession(API + '/download/' + encodeURIComponent(name));
-    a.download = name;
+    a.href = url;
+    if (name) a.download = name;
     a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
     setTimeout(function () { a.remove(); }, 0);
   }
 
+  // 原生下载：由浏览器直接下载 URL，不经过 XHR，内存占用恒定
+  function nativeDownload(name) {
+    downloadUrl(name)
+      .then(function (url) {
+        triggerDownload(url, name);
+      })
+      .catch(function (e) { toast((e && e.message) || '下载失败', 'err'); });
+  }
+
   // 小文件下载：XHR + blob，可显示进度
   function xhrDownload(name, onDone) {
-    var url = withSession(API + '/download/' + encodeURIComponent(name));
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', url);
-    xhr.responseType = 'blob';
-    var lastLoaded = 0;
-    var lastTime = Date.now();
-    xhr.onprogress = function (e) {
-      if (!e.lengthComputable || !e.total) return;
-      var pct = Math.round(e.loaded / e.total * 100);
-      var now = Date.now();
-      var dt = (now - lastTime) / 1000;
-      if (dt > 0.3) {
-        var speed = fmtSize((e.loaded - lastLoaded) / dt) + '/s';
-        lastLoaded = e.loaded;
-        lastTime = now;
-        toast('下载中 ' + name + ' ' + pct + '% · ' + speed);
-      }
-    };
-    xhr.onload = function () {
-      if (xhr.status !== 200) { toast('下载失败：' + name, 'err'); if (onDone) onDone(false); return; }
-      var blob = xhr.response;
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
-      toast('下载完成：' + name, 'ok');
-      if (onDone) onDone(true);
-    };
-    xhr.onerror = function () { toast('下载失败：' + name, 'err'); if (onDone) onDone(false); };
-    xhr.send();
+    downloadUrl(name)
+      .then(function (url) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', url);
+        xhr.responseType = 'blob';
+        var lastLoaded = 0;
+        var lastTime = Date.now();
+        xhr.onprogress = function (e) {
+          if (!e.lengthComputable || !e.total) return;
+          var pct = Math.round(e.loaded / e.total * 100);
+          var now = Date.now();
+          var dt = (now - lastTime) / 1000;
+          if (dt > 0.3) {
+            var speed = fmtSize((e.loaded - lastLoaded) / dt) + '/s';
+            lastLoaded = e.loaded;
+            lastTime = now;
+            toast('下载中 ' + name + ' ' + pct + '% · ' + speed);
+          }
+        };
+        xhr.onload = function () {
+          if (xhr.status !== 200) {
+            toast('下载失败：' + name, 'err');
+            if (onDone) onDone(false);
+            return;
+          }
+          var blob = xhr.response;
+          var objectUrl = URL.createObjectURL(blob);
+          triggerDownload(objectUrl, name);
+          setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 5000);
+          toast('下载完成：' + name, 'ok');
+          if (onDone) onDone(true);
+        };
+        xhr.onerror = function () {
+          toast('下载失败：' + name, 'err');
+          if (onDone) onDone(false);
+        };
+        xhr.send();
+      })
+      .catch(function (e) {
+        toast((e && e.message) || '下载失败', 'err');
+        if (onDone) onDone(false);
+      });
   }
 
   function downloadFile(name) {
@@ -2082,7 +2159,6 @@
    * 因此内存占用恒定；同时可以实时反馈进度与速度。
    */
   function streamToDisk(name, size) {
-    var url = withSession(API + '/download/' + encodeURIComponent(name));
     var progress = null;
     try {
       progress = showProgress('正在下载 ' + name);
@@ -2092,7 +2168,9 @@
     var controller = new AbortController();
     if (progress) progress.cancel = function () { controller.abort(); };
 
-    // 先让用户选择保存位置
+    // 先让用户选择保存位置。
+    // 这里必须在点击事件的同一个调用栈里发起（否则浏览器会判定失去用户手势），
+    // 因此「换票据」放在拿到文件句柄之后再做。
     var picker = window.showSaveFilePicker({
       suggestedName: name,
       // 允许用户选择任意目录，避免默认下载目录被清理
@@ -2101,8 +2179,8 @@
     Promise.resolve(picker)
       .then(function (handle) {
         return handle.createWritable().then(function (writer) {
-          return fetch(url, { signal: controller.signal })
-            .then(function (res) {
+          return downloadUrl(name).then(function (url) {
+            return fetch(url, { signal: controller.signal }).then(function (res) {
               if (!res.ok) throw new Error('HTTP ' + res.status);
               var total = Number(res.headers.get('content-length')) || size || 0;
               var received = 0;
@@ -2130,6 +2208,7 @@
               }
               return pump();
             });
+          });
         });
       })
       .then(function () {
@@ -2198,18 +2277,15 @@
    * 不会因为文件多或文件大而失败。
    */
   function downloadZip(names) {
-    var url = withSession(API + '/zip?names=' + encodeURIComponent(names.join(',')));
     var stamp = new Date();
     var p = function (x) { return String(x).padStart(2, '0'); };
     var fname = 'localsend-' + stamp.getFullYear() + p(stamp.getMonth() + 1) + p(stamp.getDate()) + '-' + p(stamp.getHours()) + p(stamp.getMinutes()) + '.zip';
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = fname;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(function () { a.remove(); }, 0);
-    toast('正在打包下载 ' + names.length + ' 个文件…', 'ok');
+    ticketUrl('zip', names, '/zip?names=' + encodeURIComponent(names.join(',')))
+      .then(function (url) {
+        triggerDownload(url, fname);
+        toast('正在打包下载 ' + names.length + ' 个文件…', 'ok');
+      })
+      .catch(function (e) { toast((e && e.message) || '打包下载失败', 'err'); });
   }
 
   var imgExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif', 'heic'];
@@ -2229,53 +2305,56 @@
    */
   function previewFile(name) {
     var ext = (name.split('.').pop() || '').toLowerCase();
-    var url = withSession(API + '/preview/' + encodeURIComponent(name));
     var size = fileSizeOf(name);
 
-    // 超出内联预览上限时直接新窗口打开，避免浏览器卡死
-    if (size > INLINE_PREVIEW_MAX) {
-      window.open(url, '_blank');
-      toast('文件较大（' + fmtSize(size) + '），已在新窗口打开', 'ok');
-      return;
-    }
+    previewUrl(name)
+      .then(function (url) {
+        // 超出内联预览上限时直接新窗口打开，避免浏览器卡死
+        if (size > INLINE_PREVIEW_MAX) {
+          window.open(url, '_blank');
+          toast('文件较大（' + fmtSize(size) + '），已在新窗口打开', 'ok');
+          return;
+        }
 
-    if (imgExts.indexOf(ext) >= 0) {
-      showMediaPreview(name, url, '<img src="' + url + '" alt="' + escapeHtml(name) + '" class="max-w-full max-h-[65vh] mx-auto rounded-lg" />');
-      return;
-    }
-    if (ext === 'pdf') {
-      showMediaPreview(name, url, '<iframe src="' + url + '" class="w-full h-[65vh] rounded-lg border border-slate-800 bg-slate-950"></iframe>');
-      return;
-    }
-    if (videoExts.indexOf(ext) >= 0) {
-      showMediaPreview(name, url, '<video src="' + url + '" controls class="max-w-full max-h-[65vh] mx-auto rounded-lg bg-slate-950"></video>');
-      return;
-    }
-    if (audioExts.indexOf(ext) >= 0) {
-      showMediaPreview(name, url, '<audio src="' + url + '" controls class="w-full"></audio>');
-      return;
-    }
-    if (textExts.indexOf(ext) >= 0) {
-      fetch(url)
-        .then(function (r) { return r.text(); })
-        .then(function (t) {
-          $('previewModal').classList.remove('hidden');
-          $('previewTitle').textContent = name;
-          $('previewOpen').href = url;
-          $('previewBody').classList.add('hidden');
-          $('previewBody').innerHTML = '';
-          var pre = $('previewContent');
-          pre.classList.remove('hidden');
-          var truncated = t.length > TEXT_PREVIEW_LIMIT;
-          pre.textContent = truncated ? t.slice(0, TEXT_PREVIEW_LIMIT) + '\n\n... (内容过长已截断，共 ' + t.length + ' 字符)' : t;
-          // 复制的是完整内容，截断只影响展示
-          setPreviewCopy(t);
-        })
-        .catch(function () { toast('预览失败', 'err'); });
-      return;
-    }
-    // 其它类型：尝试在弹窗内联，不行就新窗口打开
-    window.open(url, '_blank');
+        if (imgExts.indexOf(ext) >= 0) {
+          showMediaPreview(name, url, '<img src="' + url + '" alt="' + escapeHtml(name) + '" class="max-w-full max-h-[65vh] mx-auto rounded-lg" />');
+          return;
+        }
+        if (ext === 'pdf') {
+          showMediaPreview(name, url, '<iframe src="' + url + '" class="w-full h-[65vh] rounded-lg border border-slate-800 bg-slate-950"></iframe>');
+          return;
+        }
+        if (videoExts.indexOf(ext) >= 0) {
+          showMediaPreview(name, url, '<video src="' + url + '" controls class="max-w-full max-h-[65vh] mx-auto rounded-lg bg-slate-950"></video>');
+          return;
+        }
+        if (audioExts.indexOf(ext) >= 0) {
+          showMediaPreview(name, url, '<audio src="' + url + '" controls class="w-full"></audio>');
+          return;
+        }
+        if (textExts.indexOf(ext) >= 0) {
+          fetch(url)
+            .then(function (r) { return r.text(); })
+            .then(function (t) {
+              $('previewModal').classList.remove('hidden');
+              $('previewTitle').textContent = name;
+              $('previewOpen').href = url;
+              $('previewBody').classList.add('hidden');
+              $('previewBody').innerHTML = '';
+              var pre = $('previewContent');
+              pre.classList.remove('hidden');
+              var truncated = t.length > TEXT_PREVIEW_LIMIT;
+              pre.textContent = truncated ? t.slice(0, TEXT_PREVIEW_LIMIT) + '\n\n... (内容过长已截断，共 ' + t.length + ' 字符)' : t;
+              // 复制的是完整内容，截断只影响展示
+              setPreviewCopy(t);
+            })
+            .catch(function () { toast('预览失败', 'err'); });
+          return;
+        }
+        // 其它类型：尝试在弹窗内联，不行就新窗口打开
+        window.open(url, '_blank');
+      })
+      .catch(function (e) { toast((e && e.message) || '预览失败', 'err'); });
   }
 
   /** 当前预览的文本内容，供「复制内容」按钮使用 */
@@ -2307,27 +2386,45 @@
     body.innerHTML = html;
   }
 
-  function copyLink(name) {
-    copyText(withSession(location.origin + API + '/download/' + encodeURIComponent(name)));
-  }
-  // 生成分享链接（带时效，无需访问令牌即可下载）
-  function shareFiles(names, label) {
-    if (!names || !names.length) return;
-    apiFetch(API + '/share', {
+  /**
+   * 创建一个分享链接（带时效，拿到链接的人无需登录即可访问）。
+   *
+   * 列表里的「复制」「扫码」都走这里。
+   * 直接复制下载直链会把访问凭据一起带出去（以前还会带上会话令牌），
+   * 分享链接才是「发给别人」的正确方式：可撤销、会过期、不影响自己的登录状态。
+   */
+  function createShare(names) {
+    return apiFetch(API + '/share', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ names: names })
+      body: JSON.stringify({ names: names }),
     })
       .then(function (r) { return r.json(); })
       .then(function (json) {
-        if (json.code !== 0) { toast(json.msg || '分享失败', 'err'); return; }
-        var url = location.origin + json.data.url;
-        copyText(url);
-        var tip = label || (json.data.names.length > 1 ? json.data.names.length + ' 个文件' : json.data.names[0]);
-        toast('分享链接已复制（' + tip + '，24 小时内有效）', 'ok');
+        if (json.code !== 0) throw new Error(json.msg || '分享失败');
         refreshShareCount();
+        return { url: location.origin + json.data.url, names: json.data.names, expiresAt: json.data.expiresAt };
+      });
+  }
+
+  /** 生成分享链接并复制到剪贴板 */
+  function shareFiles(names, label) {
+    if (!names || !names.length) return Promise.resolve();
+    return createShare(names)
+      .then(function (share) {
+        copyText(share.url);
+        var tip = label || (share.names.length > 1 ? share.names.length + ' 个文件' : share.names[0]);
+        toast('分享链接已复制（' + tip + '，24 小时内有效）', 'ok');
       })
-      .catch(function () { toast('分享失败', 'err'); });
+      .catch(function (e) { toast((e && e.message) || '分享失败', 'err'); });
+  }
+
+  /** 生成分享链接并以二维码展示（手机扫码直接打开） */
+  function shareQr(names) {
+    if (!names || !names.length) return Promise.resolve();
+    return createShare(names)
+      .then(function (share) { showQr(share.url, '扫码打开分享：' + share.names.join('、')); })
+      .catch(function (e) { toast((e && e.message) || '分享失败', 'err'); });
   }
 
   // ---------------------------------------------------------------------------
@@ -2550,30 +2647,34 @@
    * 调用系统分享（Web Share API）。
    *
    * 手机端可以把文件直接发到微信、AirDrop 等系统应用，
-   * 比复制链接更顺手。浏览器不支持时回退为复制下载链接。
+   * 比复制链接更顺手。浏览器不支持时回退为生成分享链接。
    */
   function systemShare(name) {
     if (typeof navigator.share !== 'function') {
-      copyLink(name);
-      toast('当前浏览器不支持系统分享，已复制下载链接', 'ok');
+      shareFiles([name]);
       return;
     }
-    var url = withSession(location.origin + API + '/download/' + encodeURIComponent(name));
-    // 能拿到文件本体时一并分享文件本身（移动端体验最好）
-    fetch(url)
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.blob();
+    downloadUrl(name)
+      .then(function (url) {
+        // 能拿到文件本体时一并分享文件本身（移动端体验最好）
+        return fetch(url)
+          .then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.blob();
+          })
+          .then(function (blob) {
+            var file = new File([blob], name, { type: blob.type || 'application/octet-stream' });
+            return navigator.share({ files: [file], title: name, text: name });
+          })
+          .catch(function (err) {
+            // 用户取消分享不算错误；其它错误回退为分享链接
+            if (err && err.name === 'AbortError') return undefined;
+            return createShare([name]).then(function (share) {
+              return navigator.share({ title: name, text: name + '\n' + share.url }).catch(function () {});
+            });
+          });
       })
-      .then(function (blob) {
-        var file = new File([blob], name, { type: blob.type || 'application/octet-stream' });
-        return navigator.share({ files: [file], title: name, text: name });
-      })
-      .catch(function (err) {
-        // 用户取消分享不算错误；其它错误回退为分享链接
-        if (err && err.name === 'AbortError') return;
-        navigator.share({ title: name, text: name + '\n' + url }).catch(function () {});
-      });
+      .catch(function (e) { toast((e && e.message) || '系统分享失败', 'err'); });
   }
 
   function deleteFile(name) {
@@ -3284,8 +3385,7 @@
     else if (act === 'preview') previewFile(name);
     else if (act === 'share') shareFiles([name]);
     else if (act === 'syshare') systemShare(name);
-    else if (act === 'copy') copyLink(name);
-    else if (act === 'qr') showQr(withSession(location.origin + API + '/download/' + encodeURIComponent(name)), '扫码直连下载：' + name);
+    else if (act === 'qr') shareQr([name]);
     else if (act === 'rename') openRenameDialog(name);
     else if (act === 'move') openMoveDialog([name]);
     else if (act === 'delete') deleteFile(name);

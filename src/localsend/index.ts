@@ -35,6 +35,7 @@ import { SECRET_ITERATIONS } from './secret';
 import { createSettingsStore, normalizeSetting, SETTING_DEFS, type SettingKey } from './settings';
 import { createShareStore, shareInlineMime, shareInlineType } from './share';
 import { cleanupTempFiles, isTempFileName } from './temp';
+import { createTicketStore, type TicketScope } from './ticket';
 import { createTrash } from './trash';
 import { createWebDavHandler } from './webdav';
 import { createZipChunks, type ZipEntry } from './zip';
@@ -335,6 +336,142 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       logger.error('[localsend share]', err);
       res.end();
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 短期访问票据
+  //
+  // 下载、预览、打包、事件流这几类 URL 由 <img> / <video> / <a download> /
+  // EventSource 直接发起，没法带自定义请求头，也不能把会话令牌拼进 URL
+  // （复制链接、浏览器历史、网关日志都会把会话带出去）。
+  // 因此先换一张短期票据，再用票据访问；票据只对指定文件有效，几分钟后失效。
+  // ---------------------------------------------------------------------------
+  const ticketStore = createTicketStore();
+
+  /** 发送下载响应 */
+  function sendDownloadResponse(res: Response, rel: string): void {
+    const filePath = resolveInDir(dir, rel);
+    if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) {
+      res.status(404).json({ code: 1, msg: '文件不存在' });
+      return;
+    }
+    res.download(filePath, basename(rel), { dotfiles: 'allow' });
+  }
+
+  /** 发送预览响应（inline，浏览器可直读图片/文本/音视频） */
+  function sendPreviewResponse(res: Response, rel: string): void {
+    const filePath = resolveInDir(dir, rel);
+    if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) {
+      res.status(404).json({ code: 1, msg: '文件不存在' });
+      return;
+    }
+    res.sendFile(filePath, {
+      dotfiles: 'allow',
+      headers: { 'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(basename(rel))}` },
+    });
+  }
+
+  /** 把多个文件流式打成 zip 输出 */
+  async function sendZipResponse(res: Response, names: string[]): Promise<void> {
+    const entries: ZipEntry[] = [];
+    for (const rel of names.slice(0, 500)) {
+      const filePath = resolveInDir(dir, rel);
+      if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) continue;
+      entries.push({ name: rel, path: filePath, mtime: statSync(filePath).mtime });
+    }
+    if (!entries.length) {
+      res.status(404).json({ code: 1, msg: '没有可打包的文件' });
+      return;
+    }
+
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="localsend-${stamp}.zip"; filename*=UTF-8''localsend-${stamp}.zip`);
+    try {
+      for await (const chunk of createZipChunks(entries, (p) => createReadStream(p))) {
+        res.write(chunk);
+      }
+      res.end();
+    } catch (err) {
+      logger.error('[localsend zip]', err);
+      res.end();
+    }
+  }
+
+  /** 建立 SSE 事件流 */
+  function openEventStream(req: Request, res: Response): void {
+    res.set({
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders?.();
+    // 建议客户端 3 秒重连，并先发一个 ready 事件确认连接建立
+    res.write('retry: 3000\n\n');
+    res.write('event: ready\ndata: {}\n\n');
+    eventClients.add(res);
+    req.on('close', () => {
+      eventClients.delete(res);
+    });
+  }
+
+  /** 票据失效：前端据此重新换票后重试 */
+  function rejectTicket(res: Response): void {
+    res.status(401).json({ code: 1, msg: '访问链接已过期，请重试', ticketExpired: true });
+  }
+
+  /** 校验票据并取出要访问的文件；不允许时直接写响应并返回空串 */
+  function relOfTicket(req: Request, res: Response, scope: TicketScope): string {
+    const entry = ticketStore.get(String(req.params.token || ''), scope);
+    if (!entry) {
+      rejectTicket(res);
+      return '';
+    }
+    const rel = relParam(req);
+    if (!rel) {
+      res.status(400).json({ code: 1, msg: '非法的文件路径' });
+      return '';
+    }
+    if (!ticketStore.allows(entry, rel)) {
+      res.status(403).json({ code: 1, msg: '票据不适用于该文件' });
+      return '';
+    }
+    return rel;
+  }
+
+  // 票据路由必须注册在访问令牌校验之前：这些 URL 带不了请求头。
+  // 同时也位于接口限流之前——视频拖动进度条会连续发起多个 Range 请求，
+  // 用「接口调用」的预算去卡它会直接毁掉播放体验；票据本身不可猜且几分钟即失效，
+  // 因此这里以票据作为准入凭证，不再叠加接口频率限制。
+  app.get('/localsend/api/t/:token/download/*name', (req: Request, res: Response) => {
+    const rel = relOfTicket(req, res, 'download');
+    if (rel) sendDownloadResponse(res, rel);
+  });
+
+  app.get('/localsend/api/t/:token/preview/*name', (req: Request, res: Response) => {
+    const rel = relOfTicket(req, res, 'preview');
+    if (rel) sendPreviewResponse(res, rel);
+  });
+
+  app.get('/localsend/api/t/:token/zip', (req: Request, res: Response) => {
+    const entry = ticketStore.get(String(req.params.token || ''), 'zip');
+    if (!entry) return void rejectTicket(res);
+    const names = String(req.query.names || '')
+      .split(',')
+      .map((n) => safeRelPath(n))
+      .filter(Boolean);
+    if (!names.length) return void res.status(400).json({ code: 1, msg: '未指定要打包的文件' });
+    // 票据只覆盖签发时列出的文件，避免被拿去打包任意路径
+    const allowed = names.every((rel) => ticketStore.allows(entry, rel));
+    if (!allowed) return void res.status(403).json({ code: 1, msg: '票据不适用于这些文件' });
+    void sendZipResponse(res, names);
+  });
+
+  app.get('/localsend/api/t/:token/events', (req: Request, res: Response) => {
+    const entry = ticketStore.get(String(req.params.token || ''), 'events');
+    if (!entry) return void rejectTicket(res);
+    openEventStream(req, res);
   });
 
   // ---------------------------------------------------------------------------
@@ -903,22 +1040,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   listCache.startWatch();
 
   // SSE 长连接：页面订阅后实时接收文件变更
-  app.get('/localsend/api/events', (req: Request, res: Response) => {
-    res.set({
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache, no-transform',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-    });
-    res.flushHeaders?.();
-    // 建议客户端 3 秒重连，并先发一个 ready 事件确认连接建立
-    res.write('retry: 3000\n\n');
-    res.write('event: ready\ndata: {}\n\n');
-    eventClients.add(res);
-    req.on('close', () => {
-      eventClients.delete(res);
-    });
-  });
+  app.get('/localsend/api/events', (req: Request, res: Response) => openEventStream(req, res));
 
   // 写操作完成后让列表缓存失效，保证下次请求能看到最新文件
   app.use('/localsend/api', (req: Request, res: Response, next: NextFunction) => {
@@ -1247,29 +1369,44 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     });
   });
 
+  /**
+   * 换票：为下载 / 预览 / 打包 / 事件流签发一张短期票据。
+   *
+   * 票据只对本次列出的文件有效，几分钟后自动失效，
+   * 因此可以安全地放进 URL（<img src>、<a download>、EventSource 都带不了请求头）。
+   */
+  app.post('/localsend/api/ticket', express.json({ limit: '64kb' }), (req: Request, res: Response) => {
+    const raw = String(req.body?.scope || 'download');
+    const scope: TicketScope = raw === 'preview' || raw === 'zip' || raw === 'events' ? raw : 'download';
+    if (scope === 'events') {
+      const entry = ticketStore.issue('events');
+      return void res.json({ code: 0, data: { token: entry.token, scope, expiresAt: entry.expiresAt } });
+    }
+    const names = (Array.isArray(req.body?.names) ? (req.body.names as unknown[]) : []).map((item) => safeRelPath(item)).filter(Boolean);
+    if (!names.length) return void res.status(400).json({ code: 1, msg: '未指定要访问的文件' });
+    // 只对真实存在的文件发票据：顺带杜绝用票据接口探测路径
+    for (const rel of names) {
+      const filePath = resolveInDir(dir, rel);
+      if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) {
+        return void res.status(404).json({ code: 1, msg: `文件不存在：${rel}` });
+      }
+    }
+    const entry = ticketStore.issue(scope, names);
+    res.json({ code: 0, data: { token: entry.token, scope, expiresAt: entry.expiresAt } });
+  });
+
   // 下载。dotfiles: 'allow' 以兼容 ~/.static-server 这类隐藏目录作为存储目录
   app.get('/localsend/api/download/*name', (req: Request, res: Response) => {
     const rel = relParam(req);
     if (!rel) return void res.status(400).json({ code: 1, msg: '非法的文件路径' });
-    const filePath = resolveInDir(dir, rel);
-    if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) {
-      return void res.status(404).json({ code: 1, msg: '文件不存在' });
-    }
-    res.download(filePath, basename(rel), { dotfiles: 'allow' });
+    sendDownloadResponse(res, rel);
   });
 
   // 预览（inline 方式返回，浏览器可直读图片/文本等）
   app.get('/localsend/api/preview/*name', (req: Request, res: Response) => {
     const rel = relParam(req);
     if (!rel) return void res.status(400).json({ code: 1, msg: '非法的文件路径' });
-    const filePath = resolveInDir(dir, rel);
-    if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) {
-      return void res.status(404).json({ code: 1, msg: '文件不存在' });
-    }
-    res.sendFile(filePath, {
-      dotfiles: 'allow',
-      headers: { 'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(basename(rel))}` },
-    });
+    sendPreviewResponse(res, rel);
   });
 
   // 删除（移入回收站，可还原）
@@ -1319,33 +1456,12 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
 
   // 批量打包下载：把多个文件流式打成 zip（不落盘、不占额外磁盘）
   app.get('/localsend/api/zip', async (req: Request, res: Response) => {
-    const raw = String(req.query.names || '');
-    const names = raw
+    const names = String(req.query.names || '')
       .split(',')
       .map((n) => safeRelPath(n))
       .filter(Boolean);
     if (!names.length) return void res.status(400).json({ code: 1, msg: '未指定要打包的文件' });
-
-    const entries: ZipEntry[] = [];
-    for (const rel of names.slice(0, 500)) {
-      const filePath = resolveInDir(dir, rel);
-      if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) continue;
-      entries.push({ name: rel, path: filePath, mtime: statSync(filePath).mtime });
-    }
-    if (!entries.length) return void res.status(404).json({ code: 1, msg: '没有可打包的文件' });
-
-    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="localsend-${stamp}.zip"; filename*=UTF-8''localsend-${stamp}.zip`);
-    try {
-      for await (const chunk of createZipChunks(entries, (p) => createReadStream(p))) {
-        res.write(chunk);
-      }
-      res.end();
-    } catch (err) {
-      logger.error('[localsend zip]', err);
-      res.end();
-    }
+    await sendZipResponse(res, names);
   });
 
   // ---------------------------------------------------------------------------
@@ -1456,6 +1572,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       trash.stop();
       shareStore.stop();
       chunkStore.stop();
+      ticketStore.stop();
     },
   };
 }
