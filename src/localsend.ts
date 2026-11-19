@@ -48,12 +48,33 @@ const PAGE_REL_PATH = './localsend/index.html';
 const PAGE_DIR = './localsend';
 
 /**
- * 前端构建产物目录（相对本模块）。
+ * 前端构建产物目录（相对运行目录）。
  *
- * 源码目录只放需要人工维护的文件，tailwind 生成的样式与 vendor 第三方库
- * 统一放在 src/assets 下，由构建生成、不纳入版本管理。
+ * 产物（tailwind 生成的 style.css、vendor 第三方库）刻意不放进 src/，
+ * 避免与源码混在一起造成误解；它们集中存放在仓库根的 assets/ 下，
+ * 由构建生成、不纳入版本管理。
  */
-const ASSETS_DIR = './assets/localsend';
+const ASSETS_REL = 'assets/localsend';
+
+/**
+ * 探测前端构建产物目录。
+ *
+ * 运行时目录特征决定产物位置，因此不写死单一路径，而是按候选顺序找
+ * 第一个包含 style.css 的目录：
+ *  - 运行态（__dirname 为 dist）：dist 内自带 assets，发布包开箱即用
+ *  - 开发态（__dirname 为 src）：产物在仓库根 assets/，即 ../assets
+ *
+ * 找不到时返回 null，由调用方决定降级处理（给出提示而非直接崩溃）。
+ *
+ * @param baseDir 运行目录，默认取当前模块所在目录
+ */
+export function resolveAssetsDir(baseDir: string = __dirname): string | null {
+  const candidates = [resolve(baseDir, ASSETS_REL), resolve(baseDir, '..', ASSETS_REL)];
+  for (const dir of candidates) {
+    if (existsSync(join(dir, 'style.css'))) return dir;
+  }
+  return null;
+}
 
 /** 严格解码字节，编码不匹配时返回 null */
 function decodeStrict(bytes: Buffer, encoding: string): string | null {
@@ -694,16 +715,21 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     }),
   );
 
-  // 前端构建产物（tailwind 样式、vendor 第三方库）：单独放在 assets 目录，
-  // 与源码分离。放在后面兜底，避免覆盖页面目录里的同名文件
-  app.use(
-    '/localsend',
-    express.static(resolve(__dirname, ASSETS_DIR), {
-      index: false,
-      maxAge: 0,
-      etag: true,
-    }),
-  );
+  // 前端构建产物（tailwind 样式、vendor 第三方库）：与源码分树存放，
+  // 放在页面目录之后兜底，避免覆盖页面目录里的同名文件
+  const assetsDir = resolveAssetsDir();
+  if (assetsDir) {
+    app.use(
+      '/localsend',
+      express.static(assetsDir, {
+        index: false,
+        maxAge: 0,
+        etag: true,
+      }),
+    );
+  } else {
+    logger.warn(`[localsend] 未找到前端构建产物，请先执行 ${color.yellow('npm run build:assets')} 生成后再访问页面`);
+  }
 
   // 文件列表（递归返回所有子目录下的文件，name 为相对路径）
   // 使用内存缓存 + fs.watch 增量更新，避免大目录每次请求都全量扫描
