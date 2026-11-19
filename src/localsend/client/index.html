@@ -41,8 +41,12 @@
     </div>
     <div class="flex flex-col items-start sm:items-end gap-2">
       <div class="text-left sm:text-right">
-        <div class="text-xs text-slate-500">本机访问地址</div>
-        <div id="pageUrl" class="text-emerald-400 font-mono text-xs sm:text-sm break-all cursor-point"></div>
+        <div class="text-xs text-slate-500 flex items-center gap-1.5 sm:justify-end">
+          <span>本机访问地址</span>
+          <!-- 多网卡（WSL / Docker / 虚拟机 / VPN）时可切换，二维码跟随所选地址 -->
+          <select id="addrSelect" class="hidden max-w-[11rem] bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-[11px] text-slate-300 outline-none cursor-pointer" title="切换二维码使用的局域网地址"></select>
+        </div>
+        <div id="pageUrl" class="text-emerald-400 font-mono text-xs sm:text-sm break-all cursor-pointer hover:underline"></div>
       </div>
       <!-- 身份：显示当前权限，必要时登录 -->
       <div class="flex items-center gap-2 flex-wrap">

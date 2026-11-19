@@ -21,7 +21,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import multer from 'multer';
 import { getConfig, type LocalSendConfig } from '../config';
 import { logger } from '../get-logger';
-import { getIp } from '../lib/utils';
+import { getIpCandidates, isLoopbackAddress, isPrivateAddress } from '../lib/utils';
 import { canManage, canWrite, createAuth } from './auth';
 import { createListCache } from './cache';
 import { createChunkStore, MAX_CHUNK_SIZE } from './chunk';
@@ -273,10 +273,25 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   setTimeout(() => cleaner.run(), 5000).unref?.();
 
   const port = config.port || 80;
-  const ipUrl = `http://${getIp() || 'localhost'}:${port}`;
+  /**
+   * 启动时列出全部候选地址。
+   *
+   * 以前只打印一个地址，且取到的是「排序后的第一个」——多网卡机器
+   * （WSL / Docker / VPN / 虚拟机）经常拿到一个手机根本连不上的地址，
+   * 用户扫码后只会看到「无法访问此网站」，却不知道是网卡选错了。
+   */
+  const ipCandidates = getIpCandidates();
+  const ipUrl = `http://${ipCandidates[0]?.address || 'localhost'}:${port}`;
   logger.log(color.green('LocalSend : '.padStart(15, ' ')), color.greenBright('局域网文件传输功能已开启'));
   logger.log(color.green('LocalSend DIR : '.padStart(15, ' ')), color.cyanBright(dir));
   logger.log(color.green('LocalSend URL : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend`));
+  if (ipCandidates.length > 1) {
+    const others = ipCandidates
+      .slice(1)
+      .map((item) => `${item.address}(${item.iface})`)
+      .join(' ');
+    logger.log(color.green('LocalSend 其它地址 :'.padStart(15, ' ')), color.gray(`${others}（页面可切换后重新生成二维码）`));
+  }
   if (live.token)
     logger.log(color.green('LocalSend KEY : '.padStart(15, ' ')), color.yellowBright('已启用访问令牌（访问时需输入令牌换取会话）'));
 
@@ -431,6 +446,36 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     const session = auth.loginByToken(String(req.body?.digest || ''));
     if (!session) return void res.status(401).json({ code: 1, msg: '访问令牌不正确' });
     res.json({ code: 0, data: { token: session.token, role: session.role, expiresAt: session.expiresAt } });
+  });
+
+  /**
+   * 候选访问地址（免鉴权）。
+   *
+   * 页面用这些地址生成二维码。手机扫码打不开的第一大原因，是主机有多张网卡
+   * （WSL / Docker / VPN / 虚拟机）而服务端取错了那一个——这里把全部候选
+   * 连同「本次请求实际连上的地址」一起返回，由页面决定展示与切换。
+   *
+   * 不含任何用户数据，因此放在令牌校验之前：页面还没输入访问令牌时
+   * 也要能把二维码画出来。
+   */
+  app.get('/localsend/api/network', (req: Request, res: Response) => {
+    // 客户端实际连上的本机地址，对它一定可达
+    const connected = String(req.socket?.localAddress || '');
+    const addresses = getIpCandidates();
+    let suggested = '';
+    if (connected && !isLoopbackAddress(connected) && isPrivateAddress(connected)) {
+      suggested = connected;
+    }
+    if (!suggested) suggested = addresses[0]?.address || '';
+    res.json({
+      code: 0,
+      data: {
+        addresses,
+        suggested,
+        connected,
+        loopback: !connected || isLoopbackAddress(connected),
+      },
+    });
   });
 
   // 访问令牌校验（配置了 token 才生效）：页面与静态资源放行，接口需要会话或令牌摘要

@@ -511,6 +511,81 @@
   }
   // 访问地址里不再带令牌：访问令牌由用户在页面上输入，避免被网关日志留存
   var pageUrl = location.origin + location.pathname;
+
+  /**
+   * 更新当前展示的访问地址。
+   *
+   * 地址同时驱动三处：页面上的文本、标题气泡、以及二维码内容。
+   * 多网卡机器上一个地址可能只有本机能打开，用户切换后二维码必须跟着变。
+   */
+  function setPageUrl(url) {
+    if (!url) return;
+    pageUrl = url;
+    $('pageUrl').textContent = url;
+    $('pageUrl').title = url;
+    if (pageQrCode) pageQrCode.update({ data: url });
+  }
+
+  /**
+   * 拉取候选访问地址，填充下拉框并选定默认值。
+   *
+   * 以前页面直接用 location.origin 生成二维码：从本机 localhost 打开时
+   * 二维码里就是 localhost，手机扫了必然打不开；而服务端只给一个地址时
+   * 又常常是 WSL / Docker 的网段。这里把「当前地址 + 全部候选网卡地址」
+   * 合起来，能用当前地址就优先用它，否则用服务端建议的那个。
+   */
+  function loadNetworkInfo() {
+    return fetch(API + '/network')
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) return;
+        var data = json.data || {};
+        var list = data.addresses || [];
+        var host = location.hostname;
+        var isLoop = host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+        var portPart = location.port ? ':' + location.port : '';
+        var origin = location.protocol + '//';
+        var candidates = [];
+        // 当前地址对本机一定可达：不是回环就让它排第一，避免「本来能用却被换掉」
+        if (!isLoop) candidates.push({ url: location.origin + location.pathname, label: host });
+        list.forEach(function (item) {
+          candidates.push({
+            url: origin + item.address + portPart + '/localsend',
+            label: item.address + (item.iface ? ' · ' + item.iface : ''),
+          });
+        });
+        // 同一个地址可能出现两次（当前地址恰好也在候选列表里）
+        var seen = {};
+        candidates = candidates.filter(function (c) {
+          if (seen[c.url]) return false;
+          seen[c.url] = 1;
+          return true;
+        });
+        if (!candidates.length) return;
+        var preferred = candidates[0].url;
+        if (isLoop && data.suggested) {
+          for (var i = 0; i < candidates.length; i++) {
+            if (candidates[i].url.indexOf('//' + data.suggested + portPart) >= 0) {
+              preferred = candidates[i].url;
+              break;
+            }
+          }
+        }
+        var sel = $('addrSelect');
+        sel.innerHTML = candidates
+          .map(function (c) {
+            return '<option value="' + escapeHtml(c.url) + '"' + (c.url === preferred ? ' selected' : '') + '>' + escapeHtml(c.label) + '</option>';
+          })
+          .join('');
+        sel.classList.toggle('hidden', candidates.length < 2);
+        setPageUrl(preferred);
+      })
+      .catch(function () {
+        /* 拿不到候选地址时保持当前地址，不影响使用 */
+      });
+  }
+
+  $('addrSelect').addEventListener('change', function (e) { setPageUrl(e.target.value); });
   // 排序偏好记忆：记住用户上次选择的排序方式与升降序
   var sortType = 'time';
   var sortOrder = 'desc';
@@ -3356,6 +3431,8 @@
   refreshSession().then(function (ok) {
     if (ok) startApp();
   });
+  // 候选访问地址与二维码：独立于认证，页面一打开就准备好
+  loadNetworkInfo();
 
   // 注册 Service Worker，提供离线可用的页面外壳
   // 仅在安全上下文可用（https 或 localhost）；局域网 http 下浏览器会拒绝注册
