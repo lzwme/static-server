@@ -816,12 +816,23 @@
     }
     thumbObserver.observe(el);
   }
+  /** 生成一个行内操作按钮：移动端只显示图标，桌面端显示文字 */
   function btn(label, act, danger, icon) {
     var cls = danger ? 'text-red-400 hover:bg-red-500/10 border-red-500/30' : 'text-slate-300 hover:bg-slate-700/70 border-slate-600/60';
-    return '<button data-act="' + act + '" title="' + label + '" class="px-1.5 sm:px-2.5 py-1 rounded-lg text-xs border transition ' + cls + '">' +
+    return (
+      '<button type="button" data-act="' +
+      act +
+      '" title="' +
+      label +
+      '" aria-label="' +
+      label +
+      '" class="px-2 py-2 sm:px-2.5 sm:py-1 rounded-lg text-xs border transition ' +
+      cls +
+      '">' +
       '<span class="sm:hidden" aria-hidden="true">' + icon + '</span>' +
       '<span class="hidden sm:inline">' + label + '</span>' +
-      '</button>';
+      '</button>'
+    );
   }
 
   /** 组装列表查询参数（筛选条件下推到服务端） */
@@ -1604,12 +1615,16 @@
         '</div>' +
         '<div class="flex items-center gap-1 sm:gap-1.5 shrink-0 justify-end w-full sm:w-auto">' +
           btn('预览', 'preview', false, '👁') + btn('下载', 'download', false, '⬇️') +
-          (canWrite() ? btn('分享', 'share', false, '🔗') : '') +
-          (canSystemShare() ? btn('系统分享', 'syshare', false, '📤') : '') +
-          // 扫码与分享同源：都是生成免登录的分享链接，不再暴露带凭据的直链
-          (canWrite() ? btn('扫码分享', 'qr', false, '📱') : '') +
-          // 整理与删除属于危险操作，只有管理员能看到
-          (isAdmin() ? btn('重命名', 'rename', false, '✏️') + btn('移动', 'move', false, '📂') + btn('删除', 'delete', true, '🗑') : '') +
+          // 桌面端保留完整按钮；移动端收进「更多」，避免一行挤 6-9 个图标
+          '<span class="hidden sm:flex items-center gap-1 sm:gap-1.5">' +
+            (canWrite() ? btn('分享', 'share', false, '🔗') : '') +
+            (canSystemShare() ? btn('系统分享', 'syshare', false, '📤') : '') +
+            // 扫码与分享同源：都是生成免登录的分享链接，不再暴露带凭据的直链
+            (canWrite() ? btn('扫码分享', 'qr', false, '📱') : '') +
+            // 整理与删除属于危险操作，只有管理员能看到
+            (isAdmin() ? btn('重命名', 'rename', false, '✏️') + btn('移动', 'move', false, '📂') + btn('删除', 'delete', true, '🗑') : '') +
+          '</span>' +
+          '<button type="button" data-act="more" title="更多操作" aria-label="更多操作" aria-haspopup="menu" class="sm:hidden px-2.5 py-2 rounded-lg text-xs border border-slate-600/60 text-slate-300">⋯</button>' +
         '</div>';
       Array.prototype.forEach.call(div.querySelectorAll('button'), function (b) { b.dataset.name = f.name; });
       wrap.appendChild(div);
@@ -2892,6 +2907,74 @@
       .catch(function (e) { toast((e && e.message) || '系统分享失败', 'err'); });
   }
 
+  /** 当前操作菜单指向的文件 */
+  var fileMenuTarget = '';
+
+  /**
+   * 打开移动端操作菜单。
+   *
+   * 手机上每行挤 6-9 个图标既难点也难认，这里只保留「预览 / 下载」，
+   * 其余动作收进底部菜单，按当前身份决定能出现哪些。
+   */
+  function openFileMenu(name) {
+    fileMenuTarget = name;
+    $('fileMenuTitle').textContent = name;
+    var actions = [
+      { act: 'preview', label: '预览', icon: '👁' },
+      { act: 'download', label: '下载', icon: '⬇️' },
+    ];
+    if (canWrite()) {
+      actions.push({ act: 'share', label: '复制分享链接', icon: '🔗' });
+      actions.push({ act: 'qr', label: '扫码分享', icon: '📱' });
+    }
+    if (canSystemShare()) actions.push({ act: 'syshare', label: '系统分享', icon: '📤' });
+    if (isAdmin()) {
+      actions.push({ act: 'rename', label: '重命名', icon: '✏️' });
+      actions.push({ act: 'move', label: '移动到目录', icon: '📂' });
+      actions.push({ act: 'delete', label: '删除', icon: '🗑', danger: true });
+    }
+    $('fileMenuList').innerHTML = actions
+      .map(function (a) {
+        var cls = a.danger ? 'border-red-500/30 text-red-400' : 'border-slate-700 text-slate-200';
+        return (
+          '<button type="button" data-act="' +
+          a.act +
+          '" class="flex items-center gap-2 px-3 py-3 rounded-xl bg-slate-800/70 border ' +
+          cls +
+          ' text-sm">' +
+          '<span aria-hidden="true">' +
+          a.icon +
+          '</span><span>' +
+          a.label +
+          '</span></button>'
+        );
+      })
+      .join('');
+    $('fileMenu').classList.remove('hidden');
+    $('fileMenu').classList.add('flex');
+  }
+
+  /** 关闭移动端操作菜单 */
+  function closeFileMenu() {
+    $('fileMenu').classList.add('hidden');
+    $('fileMenu').classList.remove('flex');
+    fileMenuTarget = '';
+  }
+
+  /** 执行一个文件操作（行内按钮与移动端菜单共用同一套实现） */
+  function runFileAction(act, name) {
+    if (!name) return;
+    if (act === 'download') downloadFile(name);
+    else if (act === 'preview') previewFile(name);
+    else if (act === 'share') shareFiles([name]);
+    else if (act === 'syshare') systemShare(name);
+    else if (act === 'qr') shareQr([name]);
+    else if (act === 'rename') openRenameDialog(name);
+    else if (act === 'move') openMoveDialog([name]);
+    else if (act === 'delete') deleteFile(name);
+    else if (act === 'more') openFileMenu(name);
+  }
+
   function deleteFile(name) {
     if (!window.confirm('确定删除文件：' + name + ' ？（删除后可在回收站还原）')) return;
     apiFetch(API + '/delete/' + encodeURIComponent(name), { method: 'DELETE' })
@@ -3601,16 +3684,21 @@
     }
     var btnEl = e.target.closest('button[data-act]');
     if (!btnEl) return;
-    var name = btnEl.dataset.name;
-    var act = btnEl.dataset.act;
-    if (act === 'download') downloadFile(name);
-    else if (act === 'preview') previewFile(name);
-    else if (act === 'share') shareFiles([name]);
-    else if (act === 'syshare') systemShare(name);
-    else if (act === 'qr') shareQr([name]);
-    else if (act === 'rename') openRenameDialog(name);
-    else if (act === 'move') openMoveDialog([name]);
-    else if (act === 'delete') deleteFile(name);
+    runFileAction(btnEl.dataset.act, btnEl.dataset.name);
+  });
+
+  // 移动端操作菜单
+  $('fileMenuClose').addEventListener('click', closeFileMenu);
+  $('fileMenu').addEventListener('click', function (e) {
+    if (e.target === $('fileMenu')) closeFileMenu();
+  });
+  $('fileMenuList').addEventListener('click', function (e) {
+    var item = e.target.closest('button[data-act]');
+    if (!item) return;
+    var act = item.dataset.act;
+    var name = fileMenuTarget;
+    closeFileMenu();
+    runFileAction(act, name);
   });
 
   // 全选 / 批量操作（全选范围为当前页显示的文件）

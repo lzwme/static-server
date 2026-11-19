@@ -365,6 +365,15 @@
   </div>
 </div>
 
+<!-- 移动端操作菜单：行内只留主操作，其余收进这里（避免一行挤 6-9 个图标） -->
+<div id="fileMenu" class="hidden fixed inset-0 z-[58] bg-black/50 items-end sm:hidden">
+  <div class="w-full bg-slate-900 border-t border-slate-700 rounded-t-2xl p-3 pb-6">
+    <div id="fileMenuTitle" class="text-xs text-slate-400 px-2 pb-2 truncate"></div>
+    <div id="fileMenuList" class="grid grid-cols-2 gap-2"></div>
+    <button id="fileMenuClose" class="mt-3 w-full py-2.5 rounded-xl bg-slate-800 text-slate-300 text-sm">取消</button>
+  </div>
+</div>
+
 <!-- Toast -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] rounded-xl px-5 py-3 text-sm shadow-xl border border-white/10"></div>
 
