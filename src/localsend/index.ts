@@ -1158,14 +1158,36 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   // 单文件硬性上限：运行时把 maxSize 设为 0（不限制）时仍保留一道防线，避免磁盘被单个请求撑满
   const HARD_UPLOAD_LIMIT = 1024 * 1024 * 1024 * 1024;
   // 每次请求都按当前生效的 maxSize 创建 multer 实例，确保运行时修改立即生效
+  /**
+   * 本次上传的目标目录（相对存储目录，根目录为空串）。
+   *
+   * 页面在某个目录下上传时，文件应该落在这个目录里——
+   * 以前一律写根目录，用户在「归档/2026」视图里上传完还得再移动一次。
+   */
+  function uploadTargetRel(req: Request): string {
+    const raw = String(req.query?.dir ?? '').trim();
+    if (!raw || raw === ROOT_DIR) return '';
+    return safeRelPath(raw);
+  }
+
+  /** 上传目标目录的绝对路径（目录不存在时创建） */
+  function uploadTargetAbs(req: Request): string {
+    const rel = uploadTargetRel(req);
+    const abs = rel ? resolveInDir(dir, rel) : '';
+    const target = abs || dir;
+    if (!existsSync(target)) mkdirSync(target, { recursive: true });
+    return target;
+  }
+
   const createUpload = () =>
     multer({
       storage: multer.diskStorage({
-        destination: (_req, _file, cb) => cb(null, dir),
+        destination: (req, _file, cb) => cb(null, uploadTargetAbs(req)),
         filename: (req, _file, cb) => {
           const fileName = randomBytes(16).toString('hex');
           const set = tempFiles.get(req) || new Set<string>();
-          set.add(join(dir, fileName));
+          // 临时文件落在目标目录里，转正时同目录 rename 是最快的
+          set.add(join(uploadTargetAbs(req), fileName));
           tempFiles.set(req, set);
           cb(null, fileName);
         },
@@ -1192,6 +1214,14 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     requireWrite,
     // 单 IP 并发上传数限制
     guard.limitConcurrent,
+    // 目标目录先校验：非法时直接拒绝，不能静默落到根目录
+    (req: Request, res: Response, next: NextFunction) => {
+      const raw = String(req.query?.dir ?? '').trim();
+      if (raw && raw !== ROOT_DIR && !safeRelPath(raw)) {
+        return void res.status(400).json({ code: 1, msg: '非法的目标目录' });
+      }
+      next();
+    },
     // 总容量预检：目录已用容量与本次请求体大小共同判断，超出配额直接拒绝
     (req: Request, res: Response, next) => {
       if (!live.maxTotalSize) return next();
@@ -1237,11 +1267,14 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
         temps.clear();
       });
 
+      const targetRel = uploadTargetRel(req);
       for (const f of files) {
         try {
           // 文件名可能是带目录的相对路径（上传文件夹时保留结构）
           const rel = safeRelPath(decodeUploadName(f.originalname)) || `file_${Date.now()}`;
-          const name = uniqueName(dir, rel);
+          // 目标目录来自页面当前视图：在「归档/2026」里上传就落在该目录
+          const fullRel = targetRel ? `${targetRel}/${rel}` : rel;
+          const name = uniqueName(dir, fullRel);
           const target = resolveInDir(dir, name);
           if (!target) throw new Error(`非法的文件路径：${rel}`);
           const subDir = dirname(target);

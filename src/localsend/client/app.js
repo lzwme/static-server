@@ -611,6 +611,8 @@
   var searchKeyword = '';
   // 目录筛选：空字符串表示不过滤，'__root__' 表示只看根目录文件
   var dirFilter = '';
+  /** 本次上传的目标目录（相对路径，空串表示根目录）：默认跟随当前筛选目录 */
+  var uploadTargetDir = '';
   // 扩展名筛选：空字符串表示不过滤
   var extFilter = '';
   // 收件箱模式：只看最近收到的文件
@@ -1445,6 +1447,36 @@
     var exists = dirs.some(function (d) { return d.path === dirFilter; });
     if (dirFilter && dirFilter !== '__root__' && !exists) dirFilter = '';
     sel.value = dirFilter;
+    // 上传目标的可选项与目录筛选同源
+    updateUploadDirOptions();
+  }
+
+  /**
+   * 刷新「上传到」下拉。
+   *
+   * 上传目标默认跟随当前筛选目录，也可以单独改：
+   * 在「归档/2026」视图里上传，文件就落在这个目录，不必传完再移动一次。
+   */
+  function updateUploadDirOptions() {
+    var sel = $('uploadDirSelect');
+    if (!sel) return;
+    var html = '<option value="">根目录</option>';
+    facetDirs.forEach(function (d) {
+      html += '<option value="' + escapeHtml(d.path) + '">' + escapeHtml(d.path) + '</option>';
+    });
+    // 当前目标是新出现的目录时也补一个选项，避免下拉选不中
+    var known = !uploadTargetDir || facetDirs.some(function (d) { return d.path === uploadTargetDir; });
+    if (!known) html += '<option value="' + escapeHtml(uploadTargetDir) + '">' + escapeHtml(uploadTargetDir) + '</option>';
+    sel.innerHTML = html;
+    sel.value = uploadTargetDir;
+  }
+
+  /** 切换目录筛选：上传目标跟着走 */
+  function setDirFilter(value) {
+    dirFilter = value;
+    currentPage = 1;
+    uploadTargetDir = dirFilter && dirFilter !== '__root__' ? dirFilter : '';
+    updateUploadDirOptions();
   }
 
   /** 刷新扩展名筛选下拉选项 */
@@ -1819,8 +1851,16 @@
     toast('已取消未完成的上传');
   }
 
-  function enqueueUpload(file, rel) {
-    uploadQueue.push({ file: file, rel: rel || file.name });
+  /**
+   * 加入上传队列。
+   *
+   * alreadyResolved 为 true 表示 rel 已经是最终相对路径（重试时用），
+   * 否则按当前「上传到」的目录补上前缀。
+   */
+  function enqueueUpload(file, rel, alreadyResolved) {
+    var name = rel || file.name;
+    if (!alreadyResolved && uploadTargetDir) name = uploadTargetDir + '/' + name;
+    uploadQueue.push({ file: file, rel: name });
     uploadTotal += 1;
     updateQueueSummary();
   }
@@ -2157,7 +2197,8 @@
     cancelBtn.addEventListener('click', cancelUpload);
     row.querySelector('[data-retry]').addEventListener('click', function () {
       row.remove();
-      enqueueUpload(file, rel);
+      // rel 已经是最终路径（含目标目录），重试不要再补前缀
+      enqueueUpload(file, rel, true);
       pumpQueue();
     });
     row.querySelector('[data-dismiss]').addEventListener('click', function () { row.remove(); });
@@ -2168,7 +2209,10 @@
       return;
     }
     xhr = new XMLHttpRequest();
-    xhr.open('POST', API + '/upload');
+    // 目标目录由「上传到」决定；文件名里的子目录（上传文件夹）会拼在它后面
+    var uploadUrl = API + '/upload';
+    if (uploadTargetDir) uploadUrl += '?dir=' + encodeURIComponent(uploadTargetDir);
+    xhr.open('POST', uploadUrl);
     // 上传需要访客以上权限，会话令牌随请求头带上
     if (sessionToken) xhr.setRequestHeader('X-Localsend-Session', sessionToken);
     var lastLoaded = 0;
@@ -2607,6 +2651,8 @@
   /** 打开文本分享弹窗（可带初始文本） */
   function openTextModal(text) {
     $('textInput').value = text || '';
+    // 与上传保持一致的落点：当前视图所在目录
+    $('pasteDir').value = uploadTargetDir;
     $('textModal').classList.remove('hidden');
     setTimeout(function () { $('textInput').focus(); }, 60);
   }
@@ -3034,11 +3080,15 @@
     loadFiles();
     toast(inboxMode ? '已切换到收件箱（只看最近 ' + Math.round(INBOX_WINDOW / 60000) + ' 分钟收到的文件）' : '已退出收件箱');
   });
-  // 按目录筛选
+  // 按目录筛选（同时把上传目标切到该目录）
   $('dirSelect').addEventListener('change', function (e) {
-    dirFilter = e.target.value;
-    currentPage = 1;
+    setDirFilter(e.target.value);
     loadFiles();
+  });
+  // 手动指定上传目标目录
+  $('uploadDirSelect').addEventListener('change', function (e) {
+    uploadTargetDir = e.target.value;
+    toast('上传目标：' + (uploadTargetDir || '根目录'));
   });
   // 按扩展名筛选
   $('extSelect').addEventListener('change', function (e) {
@@ -3543,8 +3593,9 @@
     // 点击文件名前的目录标记：只看该目录下的文件
     var dirEl = e.target.closest('[data-dir]');
     if (dirEl) {
-      dirFilter = dirFilter === dirEl.dataset.dir ? '' : dirEl.dataset.dir;
-      currentPage = 1;
+      setDirFilter(dirFilter === dirEl.dataset.dir ? '' : dirEl.dataset.dir);
+      // 同步目录筛选下拉，避免两处状态不一致
+      $('dirSelect').value = dirFilter;
       loadFiles();
       return;
     }
