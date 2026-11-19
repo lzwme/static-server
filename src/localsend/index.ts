@@ -620,6 +620,20 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     logger.log(color.green('LocalSend DAV : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend/dav`));
   }
 
+  /**
+   * HTTP 下的能力降级提示。
+   *
+   * 手机通过局域网 IP 以 http 访问时属于「非安全上下文」，浏览器会禁用
+   * Service Worker（PWA 安装）、剪贴板读写、目录监听、系统分享与通知等能力。
+   * 这不是缺陷但很容易被当成缺陷，因此在启动时就说明，并给出解锁方式。
+   */
+  if (!config.https) {
+    logger.log(
+      color.yellow('LocalSend 提示 :'.padStart(15, ' ')),
+      color.yellow('当前为 HTTP 访问：手机端的安装到桌面、剪贴板、目录监听等功能不可用；需要时可用 --https 启动并信任自签证书'),
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // 接口频率限制
   //

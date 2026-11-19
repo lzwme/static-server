@@ -85,6 +85,16 @@
         </span>
         <input id="dirInput" type="file" webkitdirectory directory multiple />
       </div>
+      <!-- HTTP 访问的能力降级提示：非安全上下文会禁用 PWA / 剪贴板 / 目录监听等 -->
+      <div id="insecureTip" class="hidden mt-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-300 items-start gap-2">
+        <span aria-hidden="true">⚠️</span>
+        <div class="flex-1 leading-relaxed">
+          <span class="font-medium">当前通过 HTTP 访问</span>：安装到桌面、剪贴板读写、目录监听、系统分享与通知在本页不可用（浏览器的安全限制）。
+          需要这些能力时，可用 <span class="font-mono">ss --localsend --https</span> 启动，并在手机上信任一次自签证书。
+        </div>
+        <button id="insecureTipClose" class="text-amber-400/70 hover:text-amber-200 shrink-0 px-1" aria-label="关闭提示">×</button>
+      </div>
+
       <!-- 移动端隐藏大上传区，改用右下角悬浮按钮，列表优先 -->
       <div id="dropZone" data-need="write" class="hidden sm:block border-2 border-dashed border-slate-600 hover:border-emerald-400 rounded-2xl p-6 sm:p-10 text-center transition cursor-pointer select-none">
         <div class="text-3xl sm:text-4xl mb-3">📤</div>

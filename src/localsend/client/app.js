@@ -3478,6 +3478,27 @@
     return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
   }
 
+  /**
+   * HTTP 访问时说明哪些能力不可用。
+   *
+   * 局域网 IP + http 属于非安全上下文，Service Worker（安装到桌面）、
+   * 剪贴板读写、目录监听、系统分享与通知都会被浏览器禁用。
+   * 这是浏览器的安全限制，不解释的话用户只会认为「功能坏了」；
+   * 关掉之后记在本地，不再反复打扰。
+   */
+  function showInsecureTip() {
+    if (window.isSecureContext) return;
+    try {
+      if (localStorage.getItem('localsend.insecureTipDismissed') === '1') return;
+    } catch (e) {
+      // 存储不可用时仍然展示
+    }
+    var tip = $('insecureTip');
+    if (!tip) return;
+    tip.classList.remove('hidden');
+    tip.classList.add('flex');
+  }
+
   // ---------------------------------------------------------------------------
   // 诊断面板（仅管理员）：运行状态 + 最近操作记录
   // ---------------------------------------------------------------------------
@@ -3761,6 +3782,16 @@
 
   // 设置面板
   $('settingsBtn').addEventListener('click', openSettings);
+  // HTTP 能力降级提示：关掉后不再打扰
+  $('insecureTipClose').addEventListener('click', function () {
+    $('insecureTip').classList.add('hidden');
+    $('insecureTip').classList.remove('flex');
+    try {
+      localStorage.setItem('localsend.insecureTipDismissed', '1');
+    } catch (e) {
+      // 忽略存储失败
+    }
+  });
   // 诊断面板
   $('diagBtn').addEventListener('click', openDiag);
   $('diagClose').addEventListener('click', function () { $('diagModal').classList.add('hidden'); });
@@ -4029,6 +4060,8 @@
   });
   // 候选访问地址与二维码：独立于认证，页面一打开就准备好
   loadNetworkInfo();
+  // HTTP 下的能力降级说明：不解释的话，用户只会认为「功能坏了」
+  showInsecureTip();
 
   // 注册 Service Worker，提供离线可用的页面外壳
   // 仅在安全上下文可用（https 或 localhost）；局域网 http 下浏览器会拒绝注册
