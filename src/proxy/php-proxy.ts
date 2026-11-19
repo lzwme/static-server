@@ -2,7 +2,7 @@
 
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { existsSync, promises } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { URL } from 'node:url';
 import { color, execSync } from '@lzwme/fe-utils';
 import type { Express, NextFunction, Request, Response } from 'express';
@@ -24,9 +24,13 @@ function getPhpCgi() {
 }
 
 async function findPhpFile(pathname: string, rootDir: string) {
-  let filepath = join(rootDir, pathname);
+  const base = resolve(rootDir);
+  // 去掉开头的斜杠，保持 join(rootDir, pathname) 的原有语义（pathname 以 / 开头时仍落在 rootDir 内）
+  let filepath = resolve(base, String(pathname).replace(/^[\\/]+/, ''));
 
-  if (!filepath.includes(rootDir) || !existsSync(filepath)) return false;
+  // 严格的目录包含校验：%2e%2e 经 decodeURIComponent 后会变成 ..，不能只靠字符串 includes(rootDir) 判断
+  const rel = relative(base, filepath);
+  if (rel.startsWith('..') || isAbsolute(rel) || !existsSync(filepath)) return false;
 
   const stat = await promises.stat(filepath);
 
@@ -184,27 +188,30 @@ function runPhpCgi(
     childProc.on('exit', () => {
       childProc.stdin.end();
 
-      const lines = res ? res.split('\r\n') : [];
+      // CGI 输出可能用 CRLF 或 LF 分隔，且未必带空行结束头，按行解析避免越界崩溃
+      const lines = res ? res.split(/\r?\n/) : [];
       let line = 0;
       let body = '';
 
-      if (lines.length) {
-        do {
-          const m = lines[line].split(': ');
-          if (m[0] === '') break;
-          if (m[0] === 'Status') {
-            response.statusCode = parseInt(m[1], 10);
-          }
-          if (m.length === 2) {
-            response.setHeader(m[0], m[1]);
-          }
-          line++;
-        } while (lines[line] !== '');
-
-        body = lines.splice(line + 1).join('\n');
-      } else {
-        body = res || err;
+      for (; line < lines.length; line++) {
+        const current = lines[line];
+        if (!current) break; // 空行表示响应头结束
+        const colon = current.indexOf(':');
+        if (colon < 0) continue; // 忽略非法头行
+        const name = current.slice(0, colon).trim();
+        const value = current.slice(colon + 1).trim();
+        if (!name) continue;
+        if (name.toLowerCase() === 'status') {
+          const code = parseInt(value, 10);
+          if (Number.isFinite(code)) response.statusCode = code;
+        } else {
+          response.setHeader(name, value);
+        }
       }
+
+      // 仅当确实遇到空行时才把后续内容当作响应体
+      body = line < lines.length ? lines.slice(line + 1).join('\n') : '';
+      if (!res) body = err;
 
       logger.debug('[php]STATUS: ', response.statusCode);
 

@@ -315,9 +315,14 @@ export function batchRename(baseDir: string, names: string[], rule: RenameRule):
     const ext = extname(fileName);
     const base = fileName.slice(0, fileName.length - ext.length);
     const dirPrefix = parts.length ? `${parts.join('/')}/` : '';
+    // 批内文件会先被改成临时名，因此只把「批外已存在的文件」视为冲突
+    const existsOutsideBatch = (rel: string) => {
+      const name = rel.slice(rel.lastIndexOf('/') + 1);
+      return existsSync(join(baseDir, ...parts, name)) && !currentNames.has(rel);
+    };
     let candidate = `${dirPrefix}${fileName}`;
     let i = 1;
-    while (taken.has(candidate) || (existsSync(join(baseDir, ...parts, fileName)) && !currentNames.has(candidate))) {
+    while (taken.has(candidate) || existsOutsideBatch(candidate)) {
       candidate = `${dirPrefix}${base}_${i}${ext}`;
       i += 1;
     }

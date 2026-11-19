@@ -20,7 +20,7 @@ export async function getCert(host = 'localhost', cacheDir = '') {
   };
 
   if (cacheDir) {
-    if (!existsSync(cacheDir)) mkdir(cacheDir, { recursive: true });
+    if (!existsSync(cacheDir)) await mkdir(cacheDir, { recursive: true });
     for (const [key, filepath] of Object.entries(dirs)) {
       if (existsSync(filepath)) result[key as keyof typeof result] = await readFile(filepath, 'utf8');
     }

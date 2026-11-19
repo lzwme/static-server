@@ -26,7 +26,10 @@ export async function initServer(c?: SSConfig): Promise<Express> {
   const ipUrl = `http://${getIp()}:${port}`;
 
   app.use((req, res, next) => {
-    if (config.cors) config.headers!['Access-Control-Allow-Origin'] = req.header('origin') || '*';
+    // 反射 Origin 时不能同时允许携带凭据，否则任意站点都能发起带凭据的跨域读取
+    if (config.cors && !config.headers!['Access-Control-Allow-Credentials']) {
+      config.headers!['Access-Control-Allow-Origin'] = req.header('origin') || '*';
+    }
     Object.entries(config.headers!).forEach(([key, value]) => res.header(key, value));
     next();
   });
@@ -84,8 +87,12 @@ export async function initServer(c?: SSConfig): Promise<Express> {
   logger.debug(config);
 
   if (config.open) {
-    const openPageCmd = `${process.platform === 'win32' ? `start` : `open`} ${url}`;
-    execSync(openPageCmd);
+    const opener = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+    try {
+      execSync(`${opener} ${url}`, { stdio: 'ignore' });
+    } catch (err) {
+      logger.warn('自动打开首页失败，请手动访问：', url, err);
+    }
   }
 
   return app;

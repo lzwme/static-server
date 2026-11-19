@@ -163,7 +163,7 @@ export async function getConfig(useCache = true, cfg?: SSConfig) {
       typeof ssConfig.localsend === 'boolean' ? { enabled: ssConfig.localsend } : { ...ssConfig.localsend };
     localsend.enabled = typeof ssConfig.localsend === 'boolean' ? ssConfig.localsend : localsend.enabled !== false;
     localsend.dir = process.env.SS_LOCALSEND_DIR || localsend.dir || resolve(getUserConfigDir(), 'localsend');
-    localsend.maxSize = localsend.maxSize || 1024 * 1024 * 1024;
+    localsend.maxSize = localsend.maxSize ?? 1024 * 1024 * 1024;
     ssConfig.localsend = localsend;
   }
 
@@ -173,7 +173,6 @@ export async function getConfig(useCache = true, cfg?: SSConfig) {
 
   if (ssConfig.cors) {
     Object.assign(ssConfig.headers!, {
-      'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Allow-Headers': '*',
       'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
       'Access-Control-Allow-Origin': '*',
@@ -188,7 +187,7 @@ export async function getConfig(useCache = true, cfg?: SSConfig) {
       const info = await getCert(ssConfig.host, ssConfig.sslCache || '');
       ssl.key = Buffer.from(info.certKey);
       ssl.cert = Buffer.from(info.certCrt);
-      ssl.ca = Buffer.from(info.caKey);
+      ssl.ca = Buffer.from(info.caCrt);
     }
 
     for (const key of ['key', 'cert', 'ca'] as const) {

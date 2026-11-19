@@ -108,7 +108,7 @@ describe('访问令牌', () => {
 
 describe('频率限制', () => {
   it('超过窗口内上限后返回 429', () => {
-    const guard = createGuard({ rateLimit: { windowMs: 60_000, max: 2 } });
+    const guard = createGuard({ rateLimit: { windowMs: 60_000, max: 2 }, trustProxy: true });
     const res = mockRes();
     let allowed = 0;
     for (let i = 0; i < 4; i++) {
@@ -121,7 +121,7 @@ describe('频率限制', () => {
   });
 
   it('不同 IP 互不影响', () => {
-    const guard = createGuard({ rateLimit: { windowMs: 60_000, max: 1 } });
+    const guard = createGuard({ rateLimit: { windowMs: 60_000, max: 1 }, trustProxy: true });
     const res = mockRes();
     let allowed = 0;
     guard.rateLimit(mockReq({ headers: { 'x-forwarded-for': '2.2.2.2' } }), res, () => {
@@ -132,11 +132,25 @@ describe('频率限制', () => {
     });
     assert.equal(allowed, 2);
   });
+
+  it('默认不信任伪造的 X-Forwarded-For', () => {
+    const guard = createGuard({ rateLimit: { windowMs: 60_000, max: 1 } });
+    const res = mockRes();
+    let allowed = 0;
+    guard.rateLimit(mockReq({ headers: { 'x-forwarded-for': '9.9.9.9' } }), res, () => {
+      allowed += 1;
+    });
+    guard.rateLimit(mockReq({ headers: { 'x-forwarded-for': '8.8.8.8' } }), res, () => {
+      allowed += 1;
+    });
+    // 两次请求都来自同一个（未指定）socket，第二次应被限流
+    assert.equal(allowed, 1);
+  });
 });
 
 describe('并发限制', () => {
   it('超过并发上限后返回 429，结束后释放', () => {
-    const guard = createGuard({ maxConcurrent: 2 });
+    const guard = createGuard({ maxConcurrent: 2, trustProxy: true });
     const req = mockReq({ headers: { 'x-forwarded-for': '4.4.4.4' } });
     let allowed = 0;
     const handlers = [];

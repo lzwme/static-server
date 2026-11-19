@@ -250,6 +250,9 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     autoCleanMaxSize: Number(merged.autoCleanMaxSize) || 0,
   };
 
+  /** 当前禁止上传/保存的扩展名集合（含点、小写），运行时修改立即生效 */
+  const getBlockExts = (): Set<string> => new Set(live.blockExtensions.map((e) => (e.startsWith('.') ? e : `.${e}`).toLowerCase()));
+
   // 访问防护：令牌 / 频率限制 / 并发限制
   const guard = createGuard({
     token: () => live.token,
@@ -340,6 +343,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     const davHandler = createWebDavHandler({
       dir,
       token: () => live.token,
+      password: () => live.password,
+      visitorPassword: () => live.visitorPassword,
       maxSize: () => live.maxSize,
       maxTotalSize: () => live.maxTotalSize,
       blockExtensions: () => live.blockExtensions,
@@ -640,6 +645,11 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       { kind: parsed.kind, hash, stamp: timeStampTag(), name: String(req.body?.name ?? ''), strategy },
       parsed.ext,
     );
+    // 与上传保持一致：粘贴同样不允许落盘可执行脚本（自定义文件名也不能绕过）
+    const pasteExt = extname(fileName).toLowerCase();
+    if (pasteExt && getBlockExts().has(pasteExt)) {
+      return void res.status(403).json({ code: 1, msg: `出于安全考虑，禁止保存 ${pasteExt} 类型的文件` });
+    }
     // 目标目录：只允许落在存储目录内
     const rawDir = String(req.body?.dir ?? '').trim();
     const subDir = rawDir ? safeRelPath(rawDir) : '';
@@ -826,37 +836,39 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   });
 
   // 多文件上传
-  /** 运行时读取当前生效的禁止扩展名 */
-  const getBlockExts = (): Set<string> => new Set(live.blockExtensions.map((e) => (e.startsWith('.') ? e : `.${e}`).toLowerCase()));
   // 记录每个请求产生的临时文件，便于请求结束（含客户端中断）后清理残留
   const tempFiles = new WeakMap<Request, Set<string>>();
-  const upload = multer({
-    storage: multer.diskStorage({
-      destination: (_req, _file, cb) => cb(null, dir),
-      filename: (req, _file, cb) => {
-        const fileName = randomBytes(16).toString('hex');
-        const set = tempFiles.get(req) || new Set<string>();
-        set.add(join(dir, fileName));
-        tempFiles.set(req, set);
-        cb(null, fileName);
+  // 单文件硬性上限：运行时把 maxSize 设为 0（不限制）时仍保留一道防线，避免磁盘被单个请求撑满
+  const HARD_UPLOAD_LIMIT = 1024 * 1024 * 1024 * 1024;
+  // 每次请求都按当前生效的 maxSize 创建 multer 实例，确保运行时修改立即生效
+  const createUpload = () =>
+    multer({
+      storage: multer.diskStorage({
+        destination: (_req, _file, cb) => cb(null, dir),
+        filename: (req, _file, cb) => {
+          const fileName = randomBytes(16).toString('hex');
+          const set = tempFiles.get(req) || new Set<string>();
+          set.add(join(dir, fileName));
+          tempFiles.set(req, set);
+          cb(null, fileName);
+        },
+      }),
+      limits: { fileSize: live.maxSize > 0 ? live.maxSize : HARD_UPLOAD_LIMIT, files: 200 },
+      // 保留上传文件名的完整相对路径（上传文件夹时可保留目录结构）
+      preservePath: true,
+      // 显式声明按 latin1 读取 Content-Disposition 参数，保留文件名的原始字节，
+      // 再由 decodeUploadName 按 utf-8 / gb18030 解码，避免中文文件名乱码
+      defParamCharset: 'latin1',
+      // 拦截可执行脚本，避免上传目录与静态服务根目录重叠时形成远程代码执行入口
+      fileFilter: (_req, file, cb) => {
+        const ext = extname(decodeUploadName(file.originalname)).toLowerCase();
+        if (ext && getBlockExts().has(ext)) {
+          cb(new LocalsendError(`出于安全考虑，禁止上传 ${ext} 类型的文件`, 403));
+          return;
+        }
+        cb(null, true);
       },
-    }),
-    limits: { fileSize: live.maxSize, files: 200 },
-    // 保留上传文件名的完整相对路径（上传文件夹时可保留目录结构）
-    preservePath: true,
-    // 显式声明按 latin1 读取 Content-Disposition 参数，保留文件名的原始字节，
-    // 再由 decodeUploadName 按 utf-8 / gb18030 解码，避免中文文件名乱码
-    defParamCharset: 'latin1',
-    // 拦截可执行脚本，避免上传目录与静态服务根目录重叠时形成远程代码执行入口
-    fileFilter: (_req, file, cb) => {
-      const ext = extname(decodeUploadName(file.originalname)).toLowerCase();
-      if (ext && getBlockExts().has(ext)) {
-        cb(new LocalsendError(`出于安全考虑，禁止上传 ${ext} 类型的文件`, 403));
-        return;
-      }
-      cb(null, true);
-    },
-  });
+    });
   app.post(
     '/localsend/api/upload',
     // 写操作需要访客以上权限（只读访问不允许上传）
@@ -885,7 +897,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       }
       next();
     },
-    upload.array('files'),
+    // 按请求创建，使 maxSize 的运行时修改立即生效
+    (req: Request, res: Response, next: NextFunction) => createUpload().array('files')(req, res, next),
     (req: Request, res: Response) => {
       const files = (req.files || []) as Express.Multer.File[];
       const results: { name: string; size: number }[] = [];

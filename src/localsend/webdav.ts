@@ -14,7 +14,7 @@
  *  - COPY / MOVE：复制、移动（部分文件管理器拖拽时会用到）
  */
 
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   copyFileSync,
   createReadStream,
@@ -29,6 +29,7 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Request, Response } from 'express';
+import { canManage, canWrite, type Role } from './auth';
 import { isInternalDirName, resolveInDir, safeRelPath } from './path';
 
 export interface WebDavOptions {
@@ -36,6 +37,10 @@ export interface WebDavOptions {
   dir: string;
   /** 访问令牌。设置后需使用 Basic Auth（用户名为 localsend）。传入函数表示运行时取值 */
   token?: string | (() => string);
+  /** 管理员口令。设置后删除/整理类操作需要在 Basic Auth 中提供此口令。传入函数表示运行时取值 */
+  password?: string | (() => string);
+  /** 访客口令。设置后可用于上传，但不能删除与整理。传入函数表示运行时取值 */
+  visitorPassword?: string | (() => string);
   /** 禁止上传的扩展名（含点，如 .php）。传入函数表示运行时取值 */
   blockExtensions?: string[] | (() => string[]);
   /** 存储总容量上限（字节），0 表示不限制。传入函数表示运行时取值 */
@@ -133,6 +138,38 @@ export function davDirSize(target: string): number {
   return total;
 }
 
+/** 递归复制目录/文件（COPY 目录时 copyFileSync 会抛 EISDIR） */
+function copyRecursive(src: string, dest: string): void {
+  if (statSync(src).isDirectory()) {
+    mkdirSync(dest, { recursive: true });
+    for (const name of readdirSync(src)) copyRecursive(join(src, name), join(dest, name));
+  } else {
+    copyFileSync(src, dest);
+  }
+}
+
+/** 常量时间比较，避免令牌/口令被逐字符试探 */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+/** 提取 Basic Auth 的用户名与密码 */
+function basicCredentials(req: Request): { user: string; pass: string } | null {
+  const auth = req.headers.authorization || '';
+  if (!auth.startsWith('Basic ')) return null;
+  try {
+    const decoded = Buffer.from(auth.slice(6), 'base64').toString('utf8');
+    const index = decoded.indexOf(':');
+    if (index < 0) return null;
+    return { user: decoded.slice(0, index), pass: decoded.slice(index + 1) };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 校验 Basic Auth。
  * 未配置令牌时直接放行；配置后要求用户名为 localsend、密码为令牌。
@@ -141,19 +178,9 @@ export function checkDavAuth(req: Request, token: string): boolean {
   if (!token) return true;
   // 也允许通过 ?key= 传递令牌（便于手工调试）
   const queryKey = String(req.query?.key ?? '');
-  if (queryKey && queryKey === token) return true;
-  const auth = req.headers.authorization || '';
-  if (!auth.startsWith('Basic ')) return false;
-  try {
-    const decoded = Buffer.from(auth.slice(6), 'base64').toString('utf8');
-    const index = decoded.indexOf(':');
-    if (index < 0) return false;
-    const user = decoded.slice(0, index);
-    const pass = decoded.slice(index + 1);
-    return user === 'localsend' && pass === token;
-  } catch {
-    return false;
-  }
+  if (queryKey && safeEqual(queryKey, token)) return true;
+  const basic = basicCredentials(req);
+  return !!basic && basic.user === 'localsend' && safeEqual(basic.pass, token);
 }
 
 interface DavItem {
@@ -279,6 +306,11 @@ export function createWebDavHandler(options: WebDavOptions) {
     const list = typeof options.blockExtensions === 'function' ? options.blockExtensions() : options.blockExtensions;
     return new Set((list || []).map((e) => (e.startsWith('.') ? e : `.${e}`).toLowerCase()));
   };
+  /** 运行时读取管理员口令 / 访客口令，用于 WebDAV 的身份分级 */
+  const readPassword = (value?: string | (() => string)): string => {
+    const resolved = typeof value === 'function' ? value() : value;
+    return resolved || '';
+  };
 
   /** 从请求中解析相对路径（逐段解码，避免 %2F 造成的歧义） */
   const relOf = (req: Request): { rel: string; invalid: boolean } => {
@@ -302,13 +334,38 @@ export function createWebDavHandler(options: WebDavOptions) {
   };
 
   return async function handleWebDav(req: Request, res: Response): Promise<void> {
-    if (!checkDavAuth(req, getToken())) {
+    const token = getToken();
+    const basic = basicCredentials(req);
+    const queryKey = String(req.query?.key ?? '');
+    // 站点令牌是进门的第一道锁；Basic 口令同样算已通过的凭据（便于 WebDAV 客户端直接带管理员口令）
+    const tokenOk = !token || (queryKey && safeEqual(queryKey, token)) || (basic?.user === 'localsend' && safeEqual(basic.pass, token));
+    if (!tokenOk) {
       res.setHeader('WWW-Authenticate', 'Basic realm="LocalSend"');
       res.status(401).send('需要访问令牌');
       return;
     }
 
     const method = (req.method || 'GET').toUpperCase();
+
+    // 身份分级：口令未配置时保持开放模式；配置后用 Basic Auth 的密码区分管理员/访客，
+    // 防止 WebDAV 的删除与整理绕过 JSON 接口上的 requireAdmin 校验。
+    const password = readPassword(options.password);
+    const visitorPassword = readPassword(options.visitorPassword);
+    let role: Role = 'open';
+    if (password || visitorPassword) {
+      const pass = basic?.user === 'localsend' ? basic.pass : '';
+      if (password && safeEqual(pass, password)) role = 'admin';
+      else if (visitorPassword && safeEqual(pass, visitorPassword)) role = 'visitor';
+      else role = 'guest';
+    }
+    const needsWrite = method === 'PUT';
+    const needsManage = method === 'DELETE' || method === 'MKCOL' || method === 'COPY' || method === 'MOVE';
+    if ((needsWrite && !canWrite(role)) || (needsManage && !canManage(role))) {
+      res.setHeader('WWW-Authenticate', 'Basic realm="LocalSend"');
+      res.status(403).send('该操作需要管理员口令');
+      return;
+    }
+
     const { rel: relPath, invalid } = relOf(req);
     if (invalid) {
       res.status(403).send('非法路径');
@@ -471,11 +528,11 @@ export function createWebDavHandler(options: WebDavOptions) {
       if (!existsSync(destParent)) mkdirSync(destParent, { recursive: true });
       try {
         if (statSync(srcFull).isDirectory()) {
-          // 目录移动用 rename，复制时逐项复制
+          // 目录移动用 rename，复制时递归复制子项
           if (method === 'MOVE') {
             renameSync(srcFull, destFull);
           } else {
-            copyFileSync(srcFull, destFull);
+            copyRecursive(srcFull, destFull);
           }
         } else if (method === 'MOVE') {
           renameSync(srcFull, destFull);

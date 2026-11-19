@@ -202,14 +202,17 @@ export function createTrash(options: TrashOptions): Trash {
       try {
         const parent = dest.slice(0, dest.length - meta.name.split('/').pop()!.length);
         if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
-        // 原位置已被占用时自动改名，避免覆盖
+        // 原位置已被占用时自动改名，避免覆盖。只改文件名部分，扩展名按最后一个点切分（无点则整体作为文件名）
+        const parts = meta.name.split('/');
+        const fileName = parts.pop() || '';
+        const dot = fileName.lastIndexOf('.');
+        const ext = dot > 0 ? fileName.slice(dot) : '';
+        const base = dot > 0 ? fileName.slice(0, dot) : fileName;
         let finalDest = dest;
         let i = 1;
         while (existsSync(finalDest)) {
-          const ext = meta.name.slice(meta.name.lastIndexOf('.'));
-          const base = ext ? meta.name.slice(0, meta.name.lastIndexOf('.')) : meta.name;
-          const suffix = ext && base ? `${base}_${i}${ext}` : `${meta.name}_${i}`;
-          finalDest = join(dir, ...suffix.split('/'));
+          const renamed = ext ? `${base}_${i}${ext}` : `${fileName}_${i}`;
+          finalDest = join(dir, ...parts, renamed);
           i += 1;
         }
         try {

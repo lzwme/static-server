@@ -13,6 +13,8 @@ import type { NextFunction, Request, Response } from 'express';
 export interface GuardOptions {
   /** 访问令牌。为空表示不校验。传入函数表示运行时取值 */
   token?: string | (() => string);
+  /** 是否信任 X-Forwarded-For 作为客户端 IP。仅在部署于可信反向代理之后才开启，默认关闭（防止伪造绕过限流） */
+  trustProxy?: boolean;
   /** 单 IP 最大并发上传数，默认 3。传入函数表示运行时取值 */
   maxConcurrent?: number | (() => number);
   /** 频率限制：窗口毫秒数与窗口内最大请求数，默认 120 次 / 60 秒。传入函数表示运行时取值 */
@@ -35,11 +37,14 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
-/** 取客户端 IP（局域网内通常是同一网段，取首个地址即可） */
-function clientIp(req: Request): string {
-  const forwarded = req.headers['x-forwarded-for'];
-  const ip = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim();
-  return ip || req.ip || req.socket.remoteAddress || 'unknown';
+/** 取客户端 IP。X-Forwarded-For 完全由客户端提供，只有显式信任代理时才采用 */
+function clientIp(req: Request, trustProxy: boolean): string {
+  if (trustProxy) {
+    const forwarded = req.headers['x-forwarded-for'];
+    const ip = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim();
+    if (ip) return ip;
+  }
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 /**
@@ -51,6 +56,7 @@ function clientIp(req: Request): string {
 const STATIC_ASSET_RE = /\.(css|js|mjs|json|webmanifest|map|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|otf)$/i;
 
 export function createGuard(options: GuardOptions = {}): Guard {
+  const trustProxy = options.trustProxy === true;
   /** 运行时读取当前生效的令牌 */
   const getToken = (): string => {
     const value = typeof options.token === 'function' ? options.token() : options.token;
@@ -111,7 +117,7 @@ export function createGuard(options: GuardOptions = {}): Guard {
   const rateLimit: Guard['rateLimit'] = (req, res, next) => {
     const { windowMs, max: maxRequests } = getRateLimit();
     if (!maxRequests || maxRequests <= 0) return next();
-    const ip = clientIp(req);
+    const ip = clientIp(req, trustProxy);
     const now = Date.now();
     const list = (hits.get(ip) || []).filter((t) => now - t < windowMs);
     if (list.length >= maxRequests) {
@@ -126,7 +132,7 @@ export function createGuard(options: GuardOptions = {}): Guard {
   const limitConcurrent: Guard['limitConcurrent'] = (req, res, next) => {
     const maxConcurrent = getMaxConcurrent();
     if (!maxConcurrent || maxConcurrent <= 0) return next();
-    const ip = clientIp(req);
+    const ip = clientIp(req, trustProxy);
     const current = concurrent.get(ip) || 0;
     if (current >= maxConcurrent) {
       res.status(429).json({ code: 1, msg: `并发上传数已达上限（${maxConcurrent}），请稍后再试` });
