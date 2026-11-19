@@ -1687,6 +1687,43 @@
   var CHUNK_THRESHOLD = 8 * 1024 * 1024; // 超过 8MB 走分片并发上传
   var CHUNK_SIZE = 4 * 1024 * 1024; // 分片大小 4MB
   var CHUNK_CONCURRENCY = 3; // 并发分片数（与服务端并发上限一致）
+
+  // 续传记录：文件指纹 -> uploadId。断线、刷新页面、服务重启后据此接上。
+  var UPLOAD_IDS_KEY = 'localsend.uploads';
+  var UPLOAD_IDS_MAX = 20; // 最多记住 20 个未完成任务，避免 localStorage 无限增长
+
+  /** 文件指纹：名称 + 大小 + 修改时间。同名但内容变了的文件不会被误续传 */
+  function fileKeyOf(rel, file) {
+    return rel + ':' + file.size + ':' + (file.lastModified || 0);
+  }
+
+  function readUploadIds() {
+    try {
+      var map = JSON.parse(localStorage.getItem(UPLOAD_IDS_KEY) || '{}');
+      return map && typeof map === 'object' ? map : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  /** 取该文件上次的任务 ID */
+  function getUploadId(fileKey) {
+    return readUploadIds()[fileKey] || '';
+  }
+
+  /** 记录/清除续传任务（id 为空表示清除） */
+  function saveUploadId(fileKey, id) {
+    var map = readUploadIds();
+    if (id) map[fileKey] = id;
+    else delete map[fileKey];
+    var keys = Object.keys(map);
+    while (keys.length > UPLOAD_IDS_MAX) delete map[keys.shift()];
+    try {
+      localStorage.setItem(UPLOAD_IDS_KEY, JSON.stringify(map));
+    } catch (e) {
+      // 存储不可用时忽略：只是失去跨刷新的续传能力
+    }
+  }
   var uploadQueue = []; // 待上传的文件
   var uploadActive = 0; // 当前进行中的上传数
   var uploadDone = 0; // 已完成（含失败）的数量
@@ -1791,16 +1828,21 @@
   }
 
   /**
-   * 大文件分片并发上传。
+   * 大文件分片并发上传（支持断点续传）。
    *
    * 单条 HTTP 流在弱网下容易成为瓶颈，把文件切片后并发上传可以让多条流同时传输，
-   * 局域网内大文件的速度提升明显。分片接口服务端已经实现，这里只负责调度。
+   * 局域网内大文件的速度提升明显。
+   *
+   * 续传：用「文件名:大小:修改时间」作为文件指纹，把拿到的 uploadId 记在
+   * localStorage 里。断线、刷新页面、甚至服务重启之后，带着指纹和 uploadId
+   * 重新 init，服务端会返回已上传的分片，只补传缺的那些。
    */
   function uploadByChunks(item, ui) {
     var file = item.file;
     var rel = item.rel || file.name;
     var startTime = Date.now();
     var uploadId = '';
+    var fileKey = fileKeyOf(rel, file);
 
     /** 上传单个分片，遇到并发限流时退避重试 */
     function sendChunk(index, chunkSize) {
@@ -1829,19 +1871,51 @@
     apiFetch(API + '/chunk/init', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: rel, size: file.size, chunkSize: CHUNK_SIZE }),
+      body: JSON.stringify({
+        name: rel,
+        size: file.size,
+        chunkSize: CHUNK_SIZE,
+        fileKey: fileKey,
+        // 上次的任务：服务端会核对名称与大小，匹配才复用
+        uploadId: getUploadId(fileKey) || undefined,
+      }),
     })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (!j || j.code !== 0) throw new Error((j && j.msg) || '初始化分片失败');
         uploadId = j.data.uploadId;
+        saveUploadId(fileKey, uploadId);
         var total = j.data.total;
         var chunkSize = j.data.chunkSize;
-        var sent = 0;
+        // 服务端已经收到哪些分片：续传时跳过它们
+        var received = Array.isArray(j.data.received) ? j.data.received : [];
+        var pending = [];
+        for (var k = 0; k < total; k++) {
+          if (received.indexOf(k) < 0) pending.push(k);
+        }
+        var sent = received.length;
         var stopped = false;
         var next = 0;
-        var active = CHUNK_CONCURRENCY; // 仍在工作的分片任务数
-        ui.statusEl.textContent = '分片上传中（0/' + total + '）';
+        var workers = Math.min(CHUNK_CONCURRENCY, Math.max(1, pending.length));
+        var active = workers; // 仍在工作的分片任务数
+
+        /** 刷新百分比、速度与状态文案 */
+        function updateProgress() {
+          var pct = total ? Math.round((sent / total) * 100) : 0;
+          ui.pctEl.textContent = pct + '%';
+          ui.barEl.style.width = pct + '%';
+          var elapsed = (Date.now() - startTime) / 1000;
+          if (elapsed > 0) ui.speedEl.textContent = fmtSize((sent * chunkSize) / elapsed) + '/s';
+          ui.statusEl.textContent = '分片上传中（' + sent + '/' + total + '）';
+        }
+
+        if (sent > 0) {
+          ui.statusEl.textContent = '继续上传（已传 ' + sent + '/' + total + '）';
+          updateProgress();
+          toast('继续上传：' + rel + '（已完成 ' + sent + '/' + total + ' 个分片）', 'ok');
+        } else {
+          ui.statusEl.textContent = '分片上传中（0/' + total + '）';
+        }
 
         /** 合并分片为正式文件 */
         function merge() {
@@ -1851,6 +1925,8 @@
               if (!mj || mj.code !== 0) throw new Error((mj && mj.msg) || '分片合并失败');
               var saved = mj.data && mj.data.name ? mj.data.name : rel;
               var renamed = saved !== rel;
+              // 任务已消费，指纹记录可以清掉了
+              saveUploadId(fileKey, '');
               ownUploads[saved] = Date.now();
               toast(renamed ? '上传完成：' + rel + ' → ' + saved + '（同名已自动改名）' : '上传完成：' + rel, 'ok');
               waitForHighlight([saved]);
@@ -1863,22 +1939,17 @@
 
         function worker() {
           if (stopped) return;
-          if (next >= total) {
+          if (next >= pending.length) {
             // 所有分片都领完了，等最后一个任务结束再合并
             active -= 1;
             if (active === 0) merge();
             return;
           }
-          var index = next++;
+          var index = pending[next++];
           sendChunk(index, chunkSize)
             .then(function () {
               sent += 1;
-              var pct = Math.round((sent / total) * 100);
-              ui.pctEl.textContent = pct + '%';
-              ui.barEl.style.width = pct + '%';
-              var elapsed = (Date.now() - startTime) / 1000;
-              if (elapsed > 0) ui.speedEl.textContent = fmtSize((sent * chunkSize) / elapsed) + '/s';
-              ui.statusEl.textContent = '分片上传中（' + sent + '/' + total + '）';
+              updateProgress();
               worker();
             })
             .catch(function (err) {
@@ -1893,7 +1964,7 @@
             });
         }
 
-        for (var i = 0; i < CHUNK_CONCURRENCY; i++) worker();
+        for (var i = 0; i < workers; i++) worker();
       })
       .catch(function (err) {
         ui.statusEl.textContent = '分片上传失败';

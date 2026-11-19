@@ -1254,7 +1254,10 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       return void res.status(413).json({ code: 1, msg: `文件超出大小限制（${(live.maxSize / 1024 / 1024).toFixed(0)}MB）` });
     }
     const chunkSize = chunkStore.clampChunkSize(req.body?.chunkSize);
-    const result = chunkStore.init(rel, size, chunkSize);
+    // 续传：客户端带上一次的任务 ID，或文件指纹（名称:大小:修改时间），服务端据此复用任务
+    const uploadId = typeof req.body?.uploadId === 'string' ? req.body.uploadId : '';
+    const fileKey = typeof req.body?.fileKey === 'string' ? req.body.fileKey : '';
+    const result = chunkStore.init(rel, size, chunkSize, { uploadId, fileKey });
     res.json({ code: 0, data: result });
   });
 
