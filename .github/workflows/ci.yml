@@ -22,21 +22,27 @@ jobs:
       - name: 安装 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26
 
       - uses: pnpm/action-setup@v4
         name: 安装 pnpm
         with:
-          version: 9
+          version: 12
           run_install: false
+
+      # 缓存真实 store 目录；~/.pnpm-store 并非 pnpm 默认 store 位置，会导致缓存永远不命中
+      - name: 获取 pnpm store 路径
+        id: pnpm-store
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
       - name: 缓存 pnpm
         uses: actions/cache@v4
         with:
-          path: ~/.pnpm-store
-          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          path: ${{ steps.pnpm-store.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: |
-            ${{ runner.os }}-pnpm-
+            ${{ runner.os }}-pnpm-store-
 
       - name: 安装依赖
         run: pnpm install --no-frozen-lockfile --ignore-scripts
@@ -50,5 +56,6 @@ jobs:
       - name: 构建
         run: pnpm run build
 
+      # node --test 已不再接受目录参数（会当作入口文件 require 而报 MODULE_NOT_FOUND），改用 glob
       - name: 自动化测试
-        run: node --test --test-timeout=60000 test/
+        run: node --test --test-timeout=60000 "test/*.test.js"
