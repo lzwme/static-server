@@ -29,7 +29,7 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Request, Response } from 'express';
-import { isInternalDirName, resolveInDir, safeRelPath } from './localsend-path';
+import { isInternalDirName, resolveInDir, safeRelPath } from './path';
 
 export interface WebDavOptions {
   /** 存储目录 */

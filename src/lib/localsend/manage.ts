@@ -10,8 +10,8 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { basename, dirname, extname, join } from 'node:path';
-import { resolveInDir, safeRelPath } from './localsend-path';
-import { ROOT_DIR } from './localsend-query';
+import { resolveInDir, safeRelPath } from './path';
+import { ROOT_DIR } from './query';
 
 /** 批量重命名支持的规则类型 */
 export type RenameMode = 'prefix' | 'suffix' | 'replace' | 'sequence';

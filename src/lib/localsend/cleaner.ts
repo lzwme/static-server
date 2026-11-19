@@ -8,7 +8,7 @@
  */
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { listFiles } from './localsend-path';
+import { listFiles } from './path';
 
 export interface CleanerOptions {
   /** 存储目录 */

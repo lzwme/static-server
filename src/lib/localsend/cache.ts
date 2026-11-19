@@ -9,7 +9,7 @@
  */
 import { existsSync, type FSWatcher, readdirSync, statSync, watch } from 'node:fs';
 import { join } from 'node:path';
-import { type FileEntry, isInternalDirName, listFiles } from './localsend-path';
+import { type FileEntry, isInternalDirName, listFiles } from './path';
 
 export interface ListCacheOptions {
   /** 存储目录 */

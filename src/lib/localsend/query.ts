@@ -9,7 +9,7 @@
  * 只返回当前需要的那一页，同时把符合条件的总数一并告诉前端，
  * 让分页控件能显示「第 X/Y 页 · 共 N 条」。
  */
-import type { FileEntry } from './localsend-path';
+import type { FileEntry } from './path';
 
 /** 根目录筛选的占位值（真实目录名不会与它冲突） */
 export const ROOT_DIR = '__root__';

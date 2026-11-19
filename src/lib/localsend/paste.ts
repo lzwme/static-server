@@ -15,7 +15,7 @@
  */
 import { createHash } from 'node:crypto';
 import { basename, extname } from 'node:path';
-import { safeRelPath } from './localsend-path';
+import { safeRelPath } from './path';
 
 /** 剪贴板内容的类型 */
 export type PasteKind = 'text' | 'image';

@@ -16,8 +16,8 @@ const {
   parsePaste,
   parseStrategy,
   timeStampTag,
-} = require('../dist/lib/localsend-paste');
-const { shareInlineMime, shareInlineType } = require('../dist/lib/localsend-share');
+} = require('../dist/lib/localsend/paste');
+const { shareInlineMime, shareInlineType } = require('../dist/lib/localsend/share');
 
 /** 构造一个 1x1 的 PNG data URL */
 const PNG_DATA_URL =

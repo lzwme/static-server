@@ -19,38 +19,41 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 import { color } from 'console-log-colors';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
-import { getConfig, type LocalSendConfig } from './config';
-import { logger } from './get-logger';
-import { canManage, canWrite, createAuth } from './lib/localsend-auth';
-import { createListCache } from './lib/localsend-cache';
-import { createChunkStore, MAX_CHUNK_SIZE } from './lib/localsend-chunk';
-import { createCleaner } from './lib/localsend-cleaner';
-import { createGuard } from './lib/localsend-guard';
-import { batchRename, moveFiles, parseRenameRule, renameFile, uniqueName } from './lib/localsend-manage';
-import { buildPasteName, contentHash, parsePaste, parseStrategy, timeStampTag } from './lib/localsend-paste';
-import { resolveInDir, safeRelPath } from './lib/localsend-path';
-import { collectDirs, collectExts, filterEntries, paginate, parseListQuery, ROOT_DIR, sortEntries } from './lib/localsend-query';
-import { createSettingsStore, normalizeSetting, SETTING_DEFS, type SettingKey } from './lib/localsend-settings';
-import { createShareStore, shareInlineMime, shareInlineType } from './lib/localsend-share';
-import { cleanupTempFiles, isTempFileName } from './lib/localsend-temp';
-import { createTrash } from './lib/localsend-trash';
-import { createWebDavHandler } from './lib/localsend-webdav';
-import { getIp } from './lib/utils';
-import { createZipChunks, type ZipEntry } from './lib/zip';
+import { getConfig, type LocalSendConfig } from '../../config';
+import { logger } from '../../get-logger';
+import { getIp } from '../utils';
+import { canManage, canWrite, createAuth } from './auth';
+import { createListCache } from './cache';
+import { createChunkStore, MAX_CHUNK_SIZE } from './chunk';
+import { createCleaner } from './cleaner';
+import { createGuard } from './guard';
+import { batchRename, moveFiles, parseRenameRule, renameFile, uniqueName } from './manage';
+import { buildPasteName, contentHash, parsePaste, parseStrategy, timeStampTag } from './paste';
+import { resolveInDir, safeRelPath } from './path';
+import { collectDirs, collectExts, filterEntries, paginate, parseListQuery, ROOT_DIR, sortEntries } from './query';
+import { createSettingsStore, normalizeSetting, SETTING_DEFS, type SettingKey } from './settings';
+import { createShareStore, shareInlineMime, shareInlineType } from './share';
+import { cleanupTempFiles, isTempFileName } from './temp';
+import { createTrash } from './trash';
+import { createWebDavHandler } from './webdav';
+import { createZipChunks, type ZipEntry } from './zip';
 
 /**
- * 前端页面单文件路径（相对本模块）。
- * 构建后页面位于 dist/localsend/index.html；dev（bun）运行时位于 src/localsend/index.html。
+ * 前端页面单文件路径（相对本模块所在目录）。
+ *
+ * 本模块位于 src/lib/localsend（dev）或 dist/lib/localsend（prod），
+ * 页面资源位于同级的 client 目录（src/client / dist/client），
+ * 两处结构一致，因此用同一条相对路径即可，无需区分开发态与运行态。
  */
-const PAGE_REL_PATH = './localsend/index.html';
+const PAGE_REL_PATH = '../../client/index.html';
 
 /** 页面静态资源目录（相对本模块），与 PAGE_REL_PATH 同级 */
-const PAGE_DIR = './localsend';
+const PAGE_DIR = '../../client';
 
 /**
- * 前端构建产物目录（相对运行目录）。
+ * 前端构建产物目录（相对本模块所在目录）。
  *
- * 产物（tailwind 生成的 style.css、vendor 第三方库）刻意不放进 src/，
+ * 产物（tailwind 生成的 style.css、vendor 第三方库）刻意不放进源码目录，
  * 避免与源码混在一起造成误解；它们集中存放在仓库根的 assets/ 下，
  * 由构建生成、不纳入版本管理。
  */
@@ -59,19 +62,26 @@ const ASSETS_REL = 'assets/localsend';
 /**
  * 探测前端构建产物目录。
  *
- * 运行时目录特征决定产物位置，因此不写死单一路径，而是按候选顺序找
- * 第一个包含 style.css 的目录：
- *  - 运行态（__dirname 为 dist）：dist 内自带 assets，发布包开箱即用
- *  - 开发态（__dirname 为 src）：产物在仓库根 assets/，即 ../assets
+ * 产物位置随运行方式而变，因此不写死单一路径，而是从运行目录逐级向上找
+ * 第一个包含 style.css 的 assets 目录：
+ *  - 运行态（__dirname 为 dist/lib/localsend）：dist 内自带 assets，发布包开箱即用
+ *  - 开发态（__dirname 为 src/lib/localsend）：产物在仓库根 assets/，需上溯三级
+ *
+ * 逐级探测的好处是：产物目录无论放在运行目录、其上级还是仓库根，
+ * 都能被找到；同时不会误取到更外层的无关 assets 目录。
  *
  * 找不到时返回 null，由调用方决定降级处理（给出提示而非直接崩溃）。
  *
  * @param baseDir 运行目录，默认取当前模块所在目录
  */
 export function resolveAssetsDir(baseDir: string = __dirname): string | null {
-  const candidates = [resolve(baseDir, ASSETS_REL), resolve(baseDir, '..', ASSETS_REL)];
-  for (const dir of candidates) {
-    if (existsSync(join(dir, 'style.css'))) return dir;
+  let dir = resolve(baseDir);
+  for (let depth = 0; depth < 5; depth++) {
+    const candidate = join(dir, ASSETS_REL);
+    if (existsSync(join(candidate, 'style.css'))) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
   return null;
 }

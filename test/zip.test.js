@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { describe, it } = require('node:test');
 
-const { createZipChunks } = require('../dist/lib/zip');
+const { createZipChunks } = require('../dist/lib/localsend/zip');
 
 const LOCAL_SIG = 0x04034b50;
 const CENTRAL_SIG = 0x02014b50;

@@ -4,7 +4,7 @@ import { program } from 'commander';
 import { color } from 'console-log-colors';
 import { CONFIG_FILE_NAME, getConfig, getUserConfigDir } from './config';
 import { logger } from './get-logger';
-import { repairLocalsendNames } from './localsend';
+import { repairLocalsendNames } from './lib/localsend';
 import { initServer } from './static-server';
 
 const pkg = require('../package.json');

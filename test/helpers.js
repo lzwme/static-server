@@ -65,10 +65,10 @@ function useTempConfig(storageDir, extra) {
 async function startServer(storageDir, extra) {
   useTempConfig(storageDir, extra);
   process.env.SS_LOCALSEND_DIR = storageDir;
-  for (const mod of ['../dist/config', '../dist/localsend']) {
+  for (const mod of ['../dist/config', '../dist/lib/localsend']) {
     delete require.cache[require.resolve(mod)];
   }
-  const { initLocalsend } = require('../dist/localsend');
+  const { initLocalsend } = require('../dist/lib/localsend');
   const express = require('express');
   const app = express();
   const handle = await initLocalsend(app);

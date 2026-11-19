@@ -4,7 +4,7 @@
 const assert = require('node:assert/strict');
 const { describe, it } = require('node:test');
 
-const { canManage, canWrite, createAuth } = require('../dist/lib/localsend-auth');
+const { canManage, canWrite, createAuth } = require('../dist/lib/localsend/auth');
 
 describe('身份会话', () => {
   it('未配置口令时为开放模式', () => {

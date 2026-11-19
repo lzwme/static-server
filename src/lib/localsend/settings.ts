@@ -14,7 +14,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { getUserConfigDir } from '../config';
+import { getUserConfigDir } from '../../config';
 
 /** 允许运行时修改的配置项 */
 export type SettingKey =

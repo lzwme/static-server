@@ -15,7 +15,7 @@ const {
   paginate,
   parseListQuery,
   sortEntries,
-} = require('../dist/lib/localsend-query');
+} = require('../dist/lib/localsend/query');
 
 /** 构造一个文件条目 */
 function file(name, size = 100, mtime = 1000) {
