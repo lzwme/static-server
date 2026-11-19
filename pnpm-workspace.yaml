@@ -1,4 +1,8 @@
 # pnpm v10+ 的配置项统一存放于此（package.json 中的 pnpm 字段已不再被读取）
+# pnpm 9+ 要求该文件必须包含非空的 packages 字段，否则 pnpm install 直接报
+# ERROR packages field missing or empty；本项目为单包，工作区即根目录
+packages:
+  - '.'
 # 允许执行构建脚本的依赖，避免 pnpm install 因 ERR_PNPM_IGNORED_BUILDS 中断
 allowBuilds:
   '@parcel/watcher': true
