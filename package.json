@@ -17,7 +17,7 @@
   "license": "MIT",
   "private": false,
   "engines": {
-    "node": "^14.18.0 || >=16.15.0"
+    "node": ">=20"
   },
   "keywords": [
     "server",
