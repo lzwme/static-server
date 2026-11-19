@@ -20,8 +20,9 @@
 
 import { randomBytes } from 'node:crypto';
 import {
-  appendFileSync,
   copyFileSync,
+  createReadStream,
+  createWriteStream,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -431,10 +432,18 @@ export function createChunkStore(options: ChunkStoreOptions) {
     },
 
     /**
-     * 合并分片为正式文件。
+     * 合并分片为正式文件（流式、异步）。
+     *
      * 由调用方提供 `resolveTarget` 把目标文件名解析为绝对路径（处理同名改名与子目录创建）。
+     *
+     * 逐片边读边写，不把分片读进内存；也不会像同步循环那样把事件循环占住——
+     * 合并 1GB 文件时，同步实现会让 SSE 推送与其它设备的列表请求一起排队数秒。
+     * 先写 `<目标名>.<随机>.merging`，校验大小后再转正，中断不会留下半截文件。
      */
-    merge(uploadId: string, resolveTarget: (name: string) => { path: string; name: string } | null): ChunkMergeResult | null {
+    async merge(
+      uploadId: string,
+      resolveTarget: (name: string) => { path: string; name: string } | null,
+    ): Promise<ChunkMergeResult | null> {
       const meta = loadMeta(uploadId);
       if (!meta) return null;
       const received = scanReceived(uploadId);
@@ -443,33 +452,39 @@ export function createChunkStore(options: ChunkStoreOptions) {
       const target = resolveTarget(meta.name);
       if (!target) return null;
 
-      // 合并到临时文件，成功后再转正，避免中断留下半截文件
       const tempPath = `${target.path}.${randomBytes(8).toString('hex')}.merging`;
-      let written = 0;
       try {
-        // 同步追加写入：确保返回前数据已完全落盘，便于后续的大小校验
-        rmSync(tempPath, { force: true });
-        for (let i = 0; i < meta.total; i++) {
-          const partPath = join(tmpDir, partName(uploadId, i));
-          if (!existsSync(partPath)) throw new Error(`分片 ${i} 缺失`);
-          const buf = readFileSync(partPath);
-          appendFileSync(tempPath, buf);
-          written += buf.length;
-        }
-      } catch (err) {
-        logger.error('[localsend chunk merge]', err);
-        rmSync(tempPath, { force: true });
-        return null;
-      }
+        await new Promise<void>((resolve, reject) => {
+          const out = createWriteStream(tempPath, { flags: 'w' });
+          let index = 0;
+          /** 写入下一片；一片写完再写下一片，保证顺序 */
+          const next = () => {
+            if (index >= meta.total) {
+              out.end();
+              return;
+            }
+            const current = index;
+            index += 1;
+            const partPath = join(tmpDir, partName(uploadId, current));
+            if (!existsSync(partPath)) {
+              out.destroy(new Error(`分片 ${current} 缺失`));
+              return;
+            }
+            const input = createReadStream(partPath);
+            input.on('error', (err) => out.destroy(err));
+            input.on('end', next);
+            input.pipe(out, { end: false });
+          };
+          out.on('finish', () => resolve());
+          out.on('error', reject);
+          next();
+        });
 
-      // 校验落盘大小后再做最终转正
-      try {
+        // 校验落盘大小后再做最终转正
         const stat = statSync(tempPath);
         if (meta.size > 0 && stat.size !== meta.size) {
-          rmSync(tempPath, { force: true });
-          return null;
+          throw new Error(`合并后大小不符：${stat.size} != ${meta.size}`);
         }
-        // 用 copy + rm 代替 rename，避免跨盘符（暂存目录与存储目录可能在不同卷）导致失败
         try {
           renameSync(tempPath, target.path);
         } catch {
@@ -477,15 +492,14 @@ export function createChunkStore(options: ChunkStoreOptions) {
           copyFileSync(tempPath, target.path);
           rmSync(tempPath, { force: true });
         }
+        // 清理分片与任务
+        this.cancel(uploadId);
+        return { name: target.name, size: stat.size };
       } catch (err) {
         logger.error('[localsend chunk merge]', err);
         rmSync(tempPath, { force: true });
         return null;
       }
-
-      // 清理分片与任务
-      this.cancel(uploadId);
-      return { name: target.name, size: written };
     },
 
     /** 取消并清理分片 */

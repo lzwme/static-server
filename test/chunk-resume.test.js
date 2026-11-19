@@ -128,7 +128,38 @@ describe('分片断点续传', () => {
     }
   });
 
-  it('合并完成后任务与元信息一并清理', () => {
+  it('多分片流式合并内容与顺序正确', async () => {
+    const { dir, tmpDir } = setup('ls-resume-stream-');
+    const store = createChunkStore({ dir, tmpDir, ttl: 60_000 });
+    try {
+      const chunkSize = 64 * 1024;
+      const total = 8;
+      const started = store.init('multi.bin', chunkSize * total, chunkSize);
+      const expected = [];
+      for (let i = 0; i < total; i++) {
+        // 让每片内容不同，才能验证顺序没有错乱
+        const buf = Buffer.alloc(chunkSize, i + 1);
+        expected.push(buf);
+        const temp = path.join(tmpDir, `incoming-${started.uploadId}-${i}`);
+        fs.writeFileSync(temp, buf);
+        store.writeChunk(started.uploadId, i, temp);
+      }
+      const target = path.join(dir, 'multi.bin');
+      const merged = await store.merge(started.uploadId, () => ({ path: target, name: 'multi.bin' }));
+      assert.ok(merged);
+      assert.equal(merged.size, chunkSize * total);
+      const actual = fs.readFileSync(target);
+      assert.deepEqual(actual, Buffer.concat(expected));
+      // 不应留下半成品
+      const leftovers = fs.readdirSync(dir).filter((name) => name.endsWith('.merging'));
+      assert.deepEqual(leftovers, []);
+    } finally {
+      store.stop();
+      removeDir(dir);
+    }
+  });
+
+  it('合并完成后任务与元信息一并清理', async () => {
     const { dir, tmpDir } = setup('ls-resume-merge-');
     const store = createChunkStore({ dir, tmpDir, ttl: 60_000 });
     try {
@@ -136,7 +167,7 @@ describe('分片断点续传', () => {
       writePart(store, tmpDir, started.uploadId, 0, 512);
       writePart(store, tmpDir, started.uploadId, 1, 512);
       const target = path.join(dir, 'done.bin');
-      const merged = store.merge(started.uploadId, () => ({ path: target, name: 'done.bin' }));
+      const merged = await store.merge(started.uploadId, () => ({ path: target, name: 'done.bin' }));
       assert.ok(merged);
       assert.equal(fs.statSync(target).size, 1024);
       assert.equal(store.meta(started.uploadId), undefined);

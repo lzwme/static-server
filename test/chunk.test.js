@@ -59,16 +59,16 @@ describe('分片暂存区', () => {
     assert.equal(store.writeChunk(uploadId, -1, chunkPath), null);
   });
 
-  it('分片不完整时无法合并', () => {
+  it('分片不完整时无法合并', async () => {
     const { uploadId, chunkSize } = store.init('incomplete.bin', 1000, 400);
     const chunkPath = path.join(tmpDir, 'incomplete-0');
     fs.writeFileSync(chunkPath, Buffer.alloc(chunkSize, 2));
     store.writeChunk(uploadId, 0, chunkPath);
-    const result = store.merge(uploadId, (name) => ({ path: path.join(dir, name), name }));
+    const result = await store.merge(uploadId, (name) => ({ path: path.join(dir, name), name }));
     assert.equal(result, null);
   });
 
-  it('分片齐全后合并出完整文件', () => {
+  it('分片齐全后合并出完整文件', async () => {
     const { uploadId, chunkSize, total } = store.init('merged.bin', 1000, 400);
     const parts = [];
     for (let i = 0; i < total; i++) {
@@ -79,7 +79,7 @@ describe('分片暂存区', () => {
       parts.push(buf);
       store.writeChunk(uploadId, i, chunkPath);
     }
-    const result = store.merge(uploadId, (name) => ({ path: path.join(dir, name), name }));
+    const result = await store.merge(uploadId, (name) => ({ path: path.join(dir, name), name }));
     assert.ok(result);
     assert.equal(result.size, 1000);
     const merged = fs.readFileSync(path.join(dir, result.name));

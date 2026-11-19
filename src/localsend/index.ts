@@ -1368,8 +1368,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     res.json({ code: 0, data: result });
   });
 
-  // 合并分片为正式文件
-  app.post('/localsend/api/chunk/merge', requireWrite, (req: Request, res: Response) => {
+  // 合并分片为正式文件（流式写入，不阻塞事件循环）
+  app.post('/localsend/api/chunk/merge', requireWrite, async (req: Request, res: Response) => {
     const uploadId = String(req.query.uploadId || '');
     const meta = chunkStore.meta(uploadId);
     if (!meta) return void res.status(404).json({ code: 1, msg: '上传任务不存在或已过期' });
@@ -1385,7 +1385,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       }
     }
 
-    const result = chunkStore.merge(uploadId, (name) => {
+    const result = await chunkStore.merge(uploadId, (name) => {
       const finalName = uniqueName(dir, name);
       const target = resolveInDir(dir, finalName);
       if (!target) return null;
