@@ -40,6 +40,8 @@ export interface GuardOptions {
    * 这里单独给一个更宽的桶，普通接口的预算不受影响。
    */
   chunkRateLimit?: { windowMs?: number; max?: number } | (() => { windowMs?: number; max?: number } | undefined);
+  /** 触发频率限制时的回调：用于计数与审计，不影响是否放行 */
+  onRateLimited?: (req: Request) => void;
 }
 
 export interface Guard {
@@ -50,12 +52,15 @@ export interface Guard {
   limitConcurrent: (req: Request, res: Response, next: NextFunction) => void;
   /** 分片上传专用的并发限制（预算比文件级并发更宽） */
   limitConcurrentChunk: (req: Request, res: Response, next: NextFunction) => void;
-  /** 当前并发占用统计（用于状态查询） */
-  stats: () => { concurrent: number; ips: number };
+  /** 当前并发占用与累计限流次数（用于状态查询） */
+  stats: () => { concurrent: number; ips: number; rateLimited: number };
 }
 
-/** 取客户端 IP。X-Forwarded-For 完全由客户端提供，只有显式信任代理时才采用 */
-function clientIp(req: Request, trustProxy: boolean): string {
+/**
+ * 取客户端 IP。X-Forwarded-For 完全由客户端提供，只有显式信任代理时才采用。
+ * 导出是为了让审计与指标使用同一套解析口径。
+ */
+export function clientIp(req: Request, trustProxy = false): string {
   if (trustProxy) {
     const forwarded = req.headers['x-forwarded-for'];
     const ip = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim();
@@ -110,6 +115,9 @@ export function createGuard(options: GuardOptions = {}): Guard {
     return { windowMs: raw?.windowMs ?? 60_000, max: raw?.max ?? 600 };
   };
 
+  /** 累计被限流的请求数（诊断用） */
+  let rateLimited = 0;
+
   /** ip -> 当前并发数 */
   const concurrent = new Map<string, number>();
   /** ip -> 最近请求时间戳队列（普通接口） */
@@ -131,6 +139,8 @@ export function createGuard(options: GuardOptions = {}): Guard {
       const now = Date.now();
       const list = (bucket.get(ip) || []).filter((t) => now - t < windowMs);
       if (list.length >= maxRequests) {
+        rateLimited += 1;
+        options.onRateLimited?.(req);
         res.status(429).json({ code: 1, msg: '请求过于频繁，请稍后再试' });
         return;
       }
@@ -243,6 +253,7 @@ export function createGuard(options: GuardOptions = {}): Guard {
     stats: () => ({
       concurrent: [...concurrent.values()].reduce((a, b) => a + b, 0),
       ips: concurrent.size,
+      rateLimited,
     }),
   };
 }

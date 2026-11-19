@@ -19,15 +19,17 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 import { color } from 'console-log-colors';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
-import { getConfig, type LocalSendConfig } from '../config';
+import { getConfig, getUserConfigDir, type LocalSendConfig } from '../config';
 import { logger } from '../get-logger';
 import { getIpCandidates, isLoopbackAddress, isPrivateAddress } from '../lib/utils';
+import { createAuditLog } from './audit';
 import { canManage, canWrite, createAuth } from './auth';
 import { createListCache } from './cache';
 import { createChunkStore, MAX_CHUNK_SIZE } from './chunk';
 import { createCleaner } from './cleaner';
-import { createGuard } from './guard';
+import { clientIp, createGuard } from './guard';
 import { batchRename, moveFiles, parseRenameRule, renameFile, uniqueName } from './manage';
+import { createMetrics } from './metrics';
 import { buildPasteName, contentHash, parsePaste, parseStrategy, timeStampTag } from './paste';
 import { isInternalDirName, resolveInDir, safeRelPath } from './path';
 import { collectDirs, collectExts, filterEntries, paginate, parseListQuery, ROOT_DIR, sortEntries } from './query';
@@ -269,6 +271,43 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
 
   /** 当前禁止上传/保存的扩展名集合（含点、小写），运行时修改立即生效 */
   const getBlockExts = (): Set<string> => new Set(live.blockExtensions.map((e) => (e.startsWith('.') ? e : `.${e}`).toLowerCase()));
+
+  // ---------------------------------------------------------------------------
+  // 审计与指标
+  //
+  // 审计只记「改了东西」的操作（删除、整理、分享、设置、认证），
+  // 日志写在用户配置目录而不是存储目录：不会被文件列表、配额、
+  // 自动清理、WebDAV 看到，也不会被「清空回收站」带走。
+  // ---------------------------------------------------------------------------
+  const audit = createAuditLog({
+    file: process.env.SS_LOCALSEND_AUDIT || join(getUserConfigDir(), 'localsend-audit.log'),
+  });
+  const metrics = createMetrics();
+
+  /**
+   * 记一条审计。
+   *
+   * 只记角色与动作，绝不记口令、令牌、会话；
+   * roleOverride 用于认证接口（此时身份中间件还没跑）。
+   */
+  function auditAction(
+    req: Request,
+    res: Response | null,
+    action: string,
+    target?: string,
+    extra?: Record<string, unknown>,
+    roleOverride?: string,
+  ): void {
+    const role = roleOverride || (res && (res.locals as Record<string, unknown>)?.role) || 'guest';
+    metrics.inc(`action.${action}`);
+    audit.record({
+      ip: clientIp(req),
+      role: String(role),
+      action,
+      target,
+      extra,
+    });
+  }
 
   // 回收站：删除的文件先移入此处，可在一段时间内还原
   const trash = createTrash({
@@ -556,6 +595,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       const chunks = Math.ceil(maxSize / chunkSize);
       return { windowMs: live.rateLimit.windowMs, max: Math.max(300, chunks * 2 + 50) };
     },
+    // 被限流的次数是判断「是不是有人刷接口」和「限流是不是配太紧」的关键指标
+    onRateLimited: () => metrics.inc('http.429'),
   });
 
   // WebDAV 挂载接口：把存储目录暴露为网络盘（资源管理器 / iOS 文件 App 均可挂载）。
@@ -572,6 +613,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       maxTotalSize: () => live.maxTotalSize,
       blockExtensions: () => live.blockExtensions,
       basePath: '/localsend/dav',
+      // WebDAV 侧的删除/上传/移动同样进审计：资源管理器里删文件也是真删
+      onWrite: (action, target, req, role) => auditAction(req, null, action, target, undefined, role),
     });
     app.use('/localsend/dav', davHandler);
     logger.log(color.green('LocalSend DAV : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend/dav`));
@@ -608,16 +651,26 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     const digests = (req.body?.digests || {}) as { password?: string; visitorPassword?: string; token?: string };
     const session = auth.login(digests);
     if (!session) {
-      // 不区分口令不存在还是口令错误，避免暴露配置细节
+      // 不区分口令不存在还是口令错误，避免暴露配置细节；但失败次数要记下来
+      metrics.inc('auth.fail');
+      auditAction(req, res, 'auth.fail', 'login');
       return void res.status(401).json({ code: 1, msg: '口令或访问令牌不正确' });
     }
+    metrics.inc('auth.ok');
+    auditAction(req, res, 'auth.login', session.via, undefined, session.role);
     res.json({ code: 0, data: { token: session.token, role: session.role, via: session.via, expiresAt: session.expiresAt } });
   });
 
   // 访问令牌换会话：令牌只在这一步参与，之后请求里只有会话令牌
   app.post('/localsend/api/auth/token', express.json({ limit: '4kb' }), (req: Request, res: Response) => {
     const session = auth.loginByToken(String(req.body?.digest || ''));
-    if (!session) return void res.status(401).json({ code: 1, msg: '访问令牌不正确' });
+    if (!session) {
+      metrics.inc('auth.fail');
+      auditAction(req, res, 'auth.fail', 'token');
+      return void res.status(401).json({ code: 1, msg: '访问令牌不正确' });
+    }
+    metrics.inc('auth.ok');
+    auditAction(req, res, 'auth.login', 'token', undefined, session.role);
     res.json({ code: 0, data: { token: session.token, role: session.role, expiresAt: session.expiresAt } });
   });
 
@@ -898,6 +951,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       applySetting(item.key, item.value, req);
     }
     logger.log(color.green('LocalSend 设置 :'.padStart(15, ' ')), color.cyanBright(`已更新：${normalized.map((i) => i.key).join('、')}`));
+    // 只记改了哪些项，不记具体值（口令/令牌都在其中）
+    auditAction(req, res, 'settings.update', normalized.map((i) => i.key).join(','));
     res.json({ code: 0, data: { applied: normalized.map((i) => i.key), ...buildSettingsPayload() } });
   });
 
@@ -909,6 +964,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     // 回到配置文件里的值（同样要走默认值归一化，否则未设置的项会变成 0）
     applySetting(key, configValueOf(key), req);
     logger.log(color.green('LocalSend 设置 :'.padStart(15, ' ')), color.cyanBright(`已恢复默认：${key}`));
+    auditAction(req, res, 'settings.reset', key);
     res.json({ code: 0, data: { applied: [key], ...buildSettingsPayload() } });
   });
 
@@ -988,6 +1044,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     if (!names.length) return void res.status(400).json({ code: 1, msg: '未指定要分享的文件' });
     const ttl = Math.min(Math.max(Number(req.body?.ttl) || 24 * 60 * 60, 60), 7 * 24 * 60 * 60);
     const { token, entry } = shareStore.create(names.slice(0, 100), ttl * 1000);
+    auditAction(req, res, 'share.create', `${entry.names.length} 个文件`, { names: entry.names.slice(0, 5) });
     res.json({
       code: 0,
       data: {
@@ -1013,7 +1070,9 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     });
   });
   app.delete('/localsend/api/share/:token', requireAdmin, (req: Request, res: Response) => {
-    const ok = shareStore.revoke(String(req.params.token || ''));
+    const shareToken = String(req.params.token || '');
+    const ok = shareStore.revoke(shareToken);
+    if (ok) auditAction(req, res, 'share.revoke', shareToken.slice(0, 8));
     res.json({ code: ok ? 0 : 1, msg: ok ? '' : '分享不存在' });
   });
 
@@ -1153,6 +1212,35 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
         trashDays: live.trashDays,
         autoCleanDays: live.autoCleanDays,
         maxSize: live.maxSize,
+      },
+    });
+  });
+
+  // 操作审计（仅管理员）：回答「谁在什么时候改了什么」
+  app.get('/localsend/api/audit', requireAdmin, (req: Request, res: Response) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    res.json({ code: 0, data: { file: audit.file, size: audit.size(), items: audit.recent(limit) } });
+  });
+
+  // 运行指标（仅管理员）：诊断「传不上去 / 合并慢」时先看这里
+  app.get('/localsend/api/stats', requireAdmin, (_req: Request, res: Response) => {
+    const snap = metrics.snapshot();
+    const cache = listCache.stats();
+    res.json({
+      code: 0,
+      data: {
+        uptime: Math.round((Date.now() - snap.startedAt) / 1000),
+        memory: process.memoryUsage().rss,
+        files: cache.entries,
+        used: usedBytes(),
+        cache: { hits: cache.hits, misses: cache.misses, watching: cache.watching, lastScan: cache.lastScan },
+        guard: guard.stats(),
+        events: eventClients.size,
+        shares: shareStore.list().length,
+        tickets: ticketStore.size(),
+        counters: snap.counters,
+        timers: snap.timers,
+        audit: { file: audit.file, size: audit.size() },
       },
     });
   });
@@ -1305,10 +1393,18 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
             // 忽略删除失败
           }
         }
+        metrics.inc('upload.rejected');
         res.status(413).json({ code: 1, msg: '存储容量不足，本次上传已撤销' });
         return;
       }
 
+      metrics.inc('upload.request');
+      if (results.length) {
+        metrics.inc('upload.file', results.length);
+        // 上传太频繁，只记「一次请求」的概要，不逐文件写审计
+        auditAction(req, res, 'file.upload', `${results.length} 个文件`, { names: results.slice(0, 5).map((item) => item.name) });
+      }
+      if (errors.length) metrics.inc('upload.error', errors.length);
       res.json({ code: 0, data: { results, errors } });
     },
   );
@@ -1425,6 +1521,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       }
     }
 
+    const mergeStarted = Date.now();
     const result = await chunkStore.merge(uploadId, (name) => {
       const finalName = uniqueName(dir, name);
       const target = resolveInDir(dir, finalName);
@@ -1433,7 +1530,14 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       if (!existsSync(subDir)) mkdirSync(subDir, { recursive: true });
       return { path: target, name: finalName };
     });
-    if (!result) return void res.status(400).json({ code: 1, msg: '分片不完整，无法合并' });
+    metrics.observe('merge.ms', Date.now() - mergeStarted);
+    if (!result) {
+      metrics.inc('merge.fail');
+      return void res.status(400).json({ code: 1, msg: '分片不完整，无法合并' });
+    }
+    metrics.inc('merge.ok');
+    metrics.inc('upload.file');
+    auditAction(req, res, 'file.upload', result.name, { chunks: meta.total, size: result.size, mode: 'chunk' });
     res.json({ code: 0, data: result });
   });
 
@@ -1546,8 +1650,10 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       } catch {
         return void res.status(500).json({ code: 1, msg: '删除失败' });
       }
+      auditAction(req, res, 'file.delete', rel, { trashed: false });
       return void res.json({ code: 0, data: { trashed: false } });
     }
+    auditAction(req, res, 'file.delete', rel, { trashed: true });
     res.json({ code: 0, data: { trashed: true, id: entry.id, name: entry.name } });
   });
 
@@ -1561,6 +1667,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     const id = String(req.params.id || '');
     const restored = trash.restore(id);
     if (!restored) return void res.status(404).json({ code: 1, msg: '回收站条目不存在或已过期' });
+    auditAction(req, res, 'trash.restore', restored);
     res.json({ code: 0, data: { name: restored } });
   });
 
@@ -1568,12 +1675,14 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   app.delete('/localsend/api/trash/:id', requireAdmin, (req: Request, res: Response) => {
     const id = String(req.params.id || '');
     const ok = trash.remove(id);
+    if (ok) auditAction(req, res, 'trash.delete', id);
     res.json({ code: ok ? 0 : 1, msg: ok ? '' : '回收站条目不存在' });
   });
 
   // 回收站：清空
-  app.delete('/localsend/api/trash', requireAdmin, (_req: Request, res: Response) => {
+  app.delete('/localsend/api/trash', requireAdmin, (req: Request, res: Response) => {
     const count = trash.empty();
+    auditAction(req, res, 'trash.empty', `${count} 个`);
     res.json({ code: 0, data: { removed: count } });
   });
 
@@ -1600,6 +1709,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     const to = String(req.body?.to ?? '');
     const result = renameFile(dir, from, to);
     if (result.code !== 0) return void res.status(400).json({ code: 1, msg: result.msg });
+    auditAction(req, res, 'file.rename', `${result.from} → ${result.to}`);
     res.json({ code: 0, data: { from: result.from, to: result.to } });
   });
 
@@ -1613,6 +1723,9 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       return void res.status(400).json({ code: 1, msg: '非法的目标目录' });
     }
     const result = moveFiles(dir, names, rawDir);
+    auditAction(req, res, 'file.move', `${result.moved.length} 个 → ${rawDir || '根目录'}`, {
+      names: result.moved.slice(0, 5).map((item) => item.from),
+    });
     res.json({ code: 0, data: result });
   });
 
@@ -1622,6 +1735,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     if (!names.length) return void res.status(400).json({ code: 1, msg: '未指定要重命名的文件' });
     const rule = parseRenameRule(req.body?.rule);
     const result = batchRename(dir, names, rule);
+    auditAction(req, res, 'file.rename-batch', `${result.renamed.length} 个`, { rule: rule.mode });
     res.json({ code: 0, data: result });
   });
 
@@ -1652,13 +1766,15 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
           failed.push(rel);
         }
       }
+      auditAction(req, res, 'file.delete-batch', `${deleted.length} 个`, { names: deleted.slice(0, 5), failed: failed.length });
       res.json({ code: 0, data: { deleted, failed } });
     },
   );
 
   // 清理上传残留的临时文件（上传中断时可能留下无扩展名的哈希文件）
-  app.post('/localsend/api/cleanup-temp', requireAdmin, (_req: Request, res: Response) => {
+  app.post('/localsend/api/cleanup-temp', requireAdmin, (req: Request, res: Response) => {
     const removed = cleanupTempFiles(dir);
+    if (removed.length) auditAction(req, res, 'file.cleanup-temp', `${removed.length} 个`);
     res.json({ code: 0, data: { removed: removed.length } });
   });
 

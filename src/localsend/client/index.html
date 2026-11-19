@@ -116,6 +116,9 @@
           <span class="sm:hidden">🔗</span><span class="hidden sm:inline">🔗 分享管理</span>
           <span id="shareCount" class="hidden ml-1 text-emerald-400 font-mono"></span>
         </button>
+        <button id="diagBtn" data-need="admin" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 hover:bg-slate-700 transition" title="诊断：运行状态与操作记录" aria-label="诊断">
+          <span class="sm:hidden">🩺</span><span class="hidden sm:inline">🩺 诊断</span>
+        </button>
         <button id="settingsBtn" data-need="admin" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 hover:bg-slate-700 transition" title="设置：口令、令牌、限制与清理策略">
           <span class="sm:hidden">⚙️</span><span class="hidden sm:inline">⚙️ 设置</span>
         </button>
@@ -338,6 +341,27 @@
 </div>
 
 <!-- 设置面板：管理员在线修改口令、令牌与各项限制 -->
+<!-- 诊断弹窗：运行状态 + 最近操作记录（仅管理员） -->
+<div id="diagModal" class="hidden fixed inset-0 z-[56] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+    <div class="flex items-center justify-between px-5 py-3 border-b border-slate-800">
+      <div class="text-sm font-medium">运行状态与操作记录</div>
+      <div class="flex items-center gap-2">
+        <button id="diagRefresh" class="text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg px-2.5 py-1 transition">刷新</button>
+        <button id="diagClose" class="text-slate-400 hover:text-slate-200 text-lg leading-none px-1" aria-label="关闭">×</button>
+      </div>
+    </div>
+    <div class="overflow-y-auto p-5 flex flex-col gap-4 text-xs">
+      <div id="diagStats" class="grid grid-cols-2 sm:grid-cols-3 gap-2"></div>
+      <div>
+        <div class="text-slate-400 mb-1.5">最近操作记录</div>
+        <div id="diagAudit" class="flex flex-col gap-1 font-mono text-[11px]"></div>
+      </div>
+      <p id="diagAuditFile" class="text-[10px] text-slate-600 break-all"></p>
+    </div>
+  </div>
+</div>
+
 <div id="settingsModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
   <div class="bg-slate-900 border border-slate-700 rounded-2xl p-4 sm:p-5 w-full max-w-2xl max-h-[88vh] flex flex-col gap-3">
     <div class="flex items-center justify-between gap-3">

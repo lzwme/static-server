@@ -59,6 +59,11 @@ export interface WebDavOptions {
   maxSize?: number | (() => number);
   /** 挂载路径前缀，如 /localsend/dav */
   basePath?: string;
+  /**
+   * 写操作回调：WebDAV 侧的删除 / 上传 / 移动同样需要审计。
+   * role 是本次请求解析出的身份，交由调用方决定日志字段。
+   */
+  onWrite?: (action: string, target: string, req: Request, role: Role) => void;
 }
 
 const DAV_NS = 'DAV:';
@@ -486,6 +491,7 @@ export function createWebDavHandler(options: WebDavOptions) {
         res.status(400).send(`上传失败：${(err as Error)?.message || '未知错误'}`);
         return;
       }
+      options.onWrite?.('dav.upload', relPath, req, role);
       res.status(201).send('已保存');
       return;
     }
@@ -497,6 +503,7 @@ export function createWebDavHandler(options: WebDavOptions) {
         return;
       }
       rmSync(full, { recursive: true, force: true });
+      options.onWrite?.('dav.delete', relPath, req, role);
       res.status(204).end();
       return;
     }
@@ -512,6 +519,7 @@ export function createWebDavHandler(options: WebDavOptions) {
         return;
       }
       mkdirSync(full, { recursive: true });
+      options.onWrite?.('dav.mkdir', relPath, req, role);
       res.status(201).send('已创建');
       return;
     }
@@ -560,6 +568,7 @@ export function createWebDavHandler(options: WebDavOptions) {
         res.status(500).send(`操作失败：${(err as Error)?.message || '未知错误'}`);
         return;
       }
+      options.onWrite?.(method === 'MOVE' ? 'dav.move' : 'dav.copy', `${relPath} → ${destRel}`, req, role);
       res.status(method === 'MOVE' ? 201 : 204).end();
       return;
     }

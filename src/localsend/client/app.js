@@ -683,6 +683,16 @@
     var p = function (x) { return String(x).padStart(2, '0'); };
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
   }
+  /** 把秒数说成人话：2 天 3 小时 / 15 分钟 */
+  function fmtDuration(seconds) {
+    var s = Number(seconds) || 0;
+    if (s < 60) return s + ' 秒';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + ' 分钟';
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + ' 小时 ' + (m % 60) + ' 分';
+    return Math.floor(h / 24) + ' 天 ' + (h % 24) + ' 小时';
+  }
   function escapeHtml(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
@@ -3468,6 +3478,124 @@
     return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
   }
 
+  // ---------------------------------------------------------------------------
+  // 诊断面板（仅管理员）：运行状态 + 最近操作记录
+  // ---------------------------------------------------------------------------
+
+  /** 审计动作的中文名 */
+  var AUDIT_LABELS = {
+    'file.delete': '删除文件',
+    'file.delete-batch': '批量删除',
+    'file.rename': '重命名',
+    'file.move': '移动',
+    'file.rename-batch': '批量重命名',
+    'file.upload': '上传',
+    'file.cleanup-temp': '清理残留',
+    'trash.restore': '回收站还原',
+    'trash.delete': '彻底删除',
+    'trash.empty': '清空回收站',
+    'share.create': '创建分享',
+    'share.revoke': '撤销分享',
+    'settings.update': '修改设置',
+    'settings.reset': '恢复默认',
+    'auth.login': '登录',
+    'auth.fail': '登录失败',
+    'dav.upload': 'WebDAV 上传',
+    'dav.delete': 'WebDAV 删除',
+    'dav.mkdir': 'WebDAV 新建目录',
+    'dav.move': 'WebDAV 移动',
+    'dav.copy': 'WebDAV 复制',
+  };
+
+  /** 打开诊断面板 */
+  function openDiag() {
+    $('diagModal').classList.remove('hidden');
+    loadDiag();
+  }
+
+  /** 拉取指标与审计记录 */
+  function loadDiag() {
+    var statsBox = $('diagStats');
+    statsBox.innerHTML = '<div class="text-slate-500">加载中…</div>';
+    apiFetch(API + '/stats')
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) throw new Error(json.msg || '读取失败');
+        renderDiagStats(json.data || {});
+      })
+      .catch(function (e) {
+        statsBox.innerHTML = '<div class="text-red-400">' + escapeHtml((e && e.message) || '读取失败') + '</div>';
+      });
+
+    apiFetch(API + '/audit?limit=60')
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) throw new Error(json.msg || '读取失败');
+        renderDiagAudit(json.data || {});
+      })
+      .catch(function (e) {
+        $('diagAudit').innerHTML = '<div class="text-red-400">' + escapeHtml((e && e.message) || '读取失败') + '</div>';
+      });
+  }
+
+  /** 诊断面板里的一张指标卡 */
+  function diagCard(label, value, hint) {
+    return (
+      '<div class="bg-slate-800/60 border border-slate-700 rounded-xl px-3 py-2">' +
+      '<div class="text-[10px] text-slate-500">' + escapeHtml(label) + '</div>' +
+      '<div class="text-slate-200 font-mono text-sm mt-0.5 break-all">' + escapeHtml(String(value)) + '</div>' +
+      (hint ? '<div class="text-[10px] text-slate-500 mt-0.5">' + escapeHtml(hint) + '</div>' : '') +
+      '</div>'
+    );
+  }
+
+  /** 渲染运行指标 */
+  function renderDiagStats(d) {
+    var c = d.counters || {};
+    var merge = (d.timers || {})['merge.ms'];
+    var cache = d.cache || {};
+    var cacheTotal = (cache.hits || 0) + (cache.misses || 0);
+    var hitRate = cacheTotal ? Math.round(((cache.hits || 0) / cacheTotal) * 100) : 0;
+    $('diagStats').innerHTML = [
+      diagCard('运行时长', fmtDuration(d.uptime)),
+      diagCard('内存占用', fmtSize(d.memory || 0)),
+      diagCard('文件 / 已用', (d.files || 0) + ' 个 · ' + fmtSize(d.used || 0)),
+      diagCard('已上传 / 失败', (c['upload.file'] || 0) + ' / ' + (c['upload.error'] || 0)),
+      diagCard('被限流次数', c['http.429'] || 0, '偏大说明被刷或限流偏紧'),
+      diagCard('合并耗时', merge ? 'P95 ' + merge.p95 + ' ms' : '-', merge ? 'P50 ' + merge.p50 + ' ms · ' + merge.count + ' 次' : '暂无合并'),
+      diagCard('缓存命中率', hitRate + '%', '命中 ' + (cache.hits || 0) + ' · 未命中 ' + (cache.misses || 0)),
+      diagCard('事件流连接', d.events || 0),
+      diagCard('票据 / 分享', (d.tickets || 0) + ' / ' + (d.shares || 0)),
+    ].join('');
+  }
+
+  /** 渲染最近操作记录 */
+  function renderDiagAudit(d) {
+    var items = d.items || [];
+    $('diagAuditFile').textContent = d.file ? '审计文件：' + d.file : '';
+    if (!items.length) {
+      $('diagAudit').innerHTML = '<div class="text-slate-500">暂无记录（删除、整理、分享、改设置才会记录）</div>';
+      return;
+    }
+    $('diagAudit').innerHTML = items
+      .map(function (item) {
+        var time = fmtTime(item.ts);
+        var label = AUDIT_LABELS[item.action] || item.action;
+        // 破坏性动作与登录失败标红，方便一眼扫到
+        var danger = item.action.indexOf('delete') >= 0 || item.action === 'trash.empty' || item.action === 'auth.fail';
+        return (
+          '<div class="flex gap-2 items-baseline ' + (danger ? 'text-red-300' : 'text-slate-300') + '">' +
+          '<span class="text-slate-500 shrink-0">' + escapeHtml(time) + '</span>' +
+          '<span class="shrink-0">' + escapeHtml(label) + '</span>' +
+          '<span class="text-slate-500 shrink-0">' + escapeHtml(item.role || '') + '</span>' +
+          '<span class="text-slate-500 shrink-0">' + escapeHtml(item.ip || '') + '</span>' +
+          '<span class="truncate" title="' + escapeHtml(item.target || '') + '">' + escapeHtml(item.target || '') + '</span>' +
+          '</div>'
+        );
+      })
+      .join('');
+  }
+
   /** 打开设置面板 */
   function openSettings() {
     apiFetch(API + '/settings')
@@ -3633,6 +3761,11 @@
 
   // 设置面板
   $('settingsBtn').addEventListener('click', openSettings);
+  // 诊断面板
+  $('diagBtn').addEventListener('click', openDiag);
+  $('diagClose').addEventListener('click', function () { $('diagModal').classList.add('hidden'); });
+  $('diagRefresh').addEventListener('click', loadDiag);
+  $('diagModal').addEventListener('click', function (e) { if (e.target === $('diagModal')) $('diagModal').classList.add('hidden'); });
   $('settingsClose').addEventListener('click', function () { $('settingsModal').classList.add('hidden'); });
   $('settingsModal').addEventListener('click', function (e) { if (e.target === $('settingsModal')) $('settingsModal').classList.add('hidden'); });
   $('settingsSave').addEventListener('click', saveSettings);
