@@ -278,38 +278,17 @@
   </div>
 </div>
 
-<!-- 访问令牌输入弹窗：令牌不再出现在地址栏里，改由用户在这里输入 -->
-<div id="tokenModal" class="hidden fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-sm flex flex-col gap-3">
-    <div id="tokenTitle" class="text-sm font-medium">需要访问令牌</div>
-    <p class="text-[11px] text-slate-500">该服务启用了访问令牌。令牌只在浏览器里换算成摘要后提交，不会出现在地址栏或请求日志里。</p>
-    <input id="tokenPassword" type="password" placeholder="请输入访问令牌" autocomplete="off" spellcheck="false"
-      class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-emerald-500/60" />
-    <p id="tokenError" class="hidden text-[11px] text-red-400"></p>
-    <div class="flex items-center justify-between gap-2">
-      <button id="tokenUseLogin" class="text-[11px] text-slate-400 hover:text-slate-200 transition">改用口令登录</button>
-      <div class="flex justify-end gap-2">
-        <button id="tokenCancel" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1.5 transition">取消</button>
-        <button id="tokenOk" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-medium rounded-lg px-4 py-1.5 transition">验证</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- 登录弹窗：口令在服务端配置，前端只负责提交与保存会话令牌 -->
+<!-- 统一认证弹窗：口令与访问令牌共用一个输入框，由服务端判断身份 -->
 <div id="loginModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
   <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-sm flex flex-col gap-3">
-    <div class="text-sm font-medium">登录 LocalSend</div>
-    <p id="loginHint" class="text-[11px] text-slate-500">管理员口令可删除文件与整理目录；访客口令用于上传下载。</p>
-    <input id="loginPassword" type="password" placeholder="请输入口令" autocomplete="current-password" spellcheck="false"
+    <div class="text-sm font-medium">登录 / 验证身份</div>
+    <p id="loginHint" class="text-[11px] text-slate-500">请输入口令或访问令牌</p>
+    <input id="loginPassword" type="password" placeholder="口令或访问令牌" autocomplete="current-password" spellcheck="false"
       class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-emerald-500/60" />
     <p id="loginError" class="hidden text-[11px] text-red-400"></p>
-    <div class="flex items-center justify-between gap-2">
-      <button id="loginUseToken" class="text-[11px] text-slate-400 hover:text-slate-200 transition">改用访问令牌</button>
-      <div class="flex justify-end gap-2">
-        <button id="loginCancel" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1.5 transition">取消</button>
-        <button id="loginOk" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-medium rounded-lg px-4 py-1.5 transition">登录</button>
-      </div>
+    <div class="flex justify-end gap-2">
+      <button id="loginCancel" class="text-xs bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-1.5 transition">取消</button>
+      <button id="loginOk" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-medium rounded-lg px-4 py-1.5 transition">验证</button>
     </div>
   </div>
 </div>

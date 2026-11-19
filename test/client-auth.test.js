@@ -130,7 +130,12 @@ function makeResponse(status, body) {
  *
  * sessionData 是 /api/session 的返回内容，apiStatus 是其它接口的状态码。
  */
-function loadApp({ sessionData, apiStatus = 401, apiBody = { code: 1, msg: '会话已失效，请重新登录', needLogin: true } } = {}) {
+function loadApp({
+  sessionData,
+  apiStatus = 401,
+  apiBody = { code: 1, msg: '会话已失效，请重新登录', needLogin: true },
+  loginResult,
+} = {}) {
   const elements = new Map();
   const getEl = (id) => {
     if (!elements.has(id)) elements.set(id, createEl(id));
@@ -138,13 +143,31 @@ function loadApp({ sessionData, apiStatus = 401, apiBody = { code: 1, msg: '会�
   };
   const storage = new Map();
   const calls = [];
+  const requests = [];
   const listeners = [];
 
-  const fetchStub = (url) => {
+  const fetchStub = (url, init) => {
     const target = String(url);
     calls.push(target);
+    requests.push({ url: target, body: init && init.body ? String(init.body) : '' });
     if (target.indexOf('/api/session') >= 0) {
       return Promise.resolve(makeResponse(200, { code: 0, data: sessionData }));
+    }
+    // 候选地址与盐值：登录流程需要，默认给一份三种凭据齐全的盐值
+    if (target.indexOf('/api/network') >= 0) {
+      return Promise.resolve(makeResponse(200, { code: 0, data: { addresses: [], suggested: '', connected: '', loopback: true } }));
+    }
+    if (target.indexOf('/api/auth/salt') >= 0) {
+      // 服务端只公布「已配置」的密钥盐值：这里跟着 session 的配置走
+      const info = sessionData || {};
+      const secrets = [];
+      if (info.hasAdmin !== false) secrets.push({ kind: 'password', salt: 'aa', iterations: 1000 });
+      if (info.hasVisitor) secrets.push({ kind: 'visitorPassword', salt: 'bb', iterations: 1000 });
+      if (info.hasToken !== false) secrets.push({ kind: 'token', salt: 'cc', iterations: 1000 });
+      return Promise.resolve(makeResponse(200, { code: 0, data: { iterations: 1000, secrets } }));
+    }
+    if (loginResult && target.indexOf('/api/auth/login') >= 0) {
+      return Promise.resolve(makeResponse(200, loginResult));
     }
     return Promise.resolve(makeResponse(apiStatus, apiBody));
   };
@@ -204,6 +227,10 @@ function loadApp({ sessionData, apiStatus = 401, apiBody = { code: 1, msg: '会�
       confirm: () => true,
       isSecureContext: false,
       location: { origin: 'http://127.0.0.1:8779', pathname: '/localsend' },
+      // 前端用它在浏览器里派生摘要；测试里只要保证「按 kind 生成不同摘要」即可
+      LocalsendCrypto: {
+        pbkdf2Hex: (secret, salt, iterations) => `digest:${salt}:${iterations}:${secret}`,
+      },
     },
   };
   sandbox.window.window = sandbox.window;
@@ -212,7 +239,7 @@ function loadApp({ sessionData, apiStatus = 401, apiBody = { code: 1, msg: '会�
   const code = fs.readFileSync(APP_JS, 'utf8');
   // 真实页面里这些弹窗默认是隐藏的，假 DOM 也要保持一致，
   // 否则「弹窗是否可见」的判断会失真
-  for (const id of ['qrModal', 'previewModal', 'trashModal', 'renameModal', 'moveModal', 'batchRenameModal', 'tokenModal', 'loginModal', 'textModal', 'settingsModal', 'shareModal']) {
+  for (const id of ['qrModal', 'previewModal', 'trashModal', 'renameModal', 'moveModal', 'batchRenameModal', 'loginModal', 'textModal', 'settingsModal', 'shareModal']) {
     getEl(id).classList.add('hidden');
   }
   vm.createContext(sandbox);
@@ -221,6 +248,7 @@ function loadApp({ sessionData, apiStatus = 401, apiBody = { code: 1, msg: '会�
   return {
     el: getEl,
     calls,
+    requests,
     storage,
     /** 等待若干轮微任务与定时器 */
     async settle(ms = 60) {
@@ -247,7 +275,6 @@ describe('客户端把 401 当作异常终止', () => {
 
     // 口令登录的身份失效：应该弹登录框，而不是令牌框
     assert.equal(visible(app.el('loginModal')), true, '应该弹出登录框');
-    assert.equal(visible(app.el('tokenModal')), false, '不该弹令牌框');
 
     // 关键：请求数不再增长
     const settled = app.calls.length;
@@ -279,22 +306,56 @@ describe('客户端把 401 当作异常终止', () => {
     assert.equal(app.storage.get('localsend.session'), undefined, '死会话应该被清掉');
   });
 
-  it('令牌用户失效时弹的是令牌框', async () => {
+  it('令牌用户失效时弹统一的认证框', async () => {
     const app = loadApp({
       sessionData: { role: 'guest', open: false, hasAdmin: false, hasVisitor: false, hasToken: true, sessionValid: true, expiresAt: Date.now() + 3600000 },
       apiBody: { code: 1, msg: '会话已失效，请重新登录', needLogin: true },
     });
     app.storage.set('localsend.authMethod', 'token');
     await app.settle();
-    assert.equal(visible(app.el('tokenModal')), true, '令牌用户应该弹令牌框');
+    // 口令与令牌共用一个输入框：不再区分「令牌框 / 登录框」
+    assert.equal(visible(app.el('loginModal')), true, '应该弹出认证框');
+    assert.match(app.el('loginHint').textContent, /访问令牌/);
   });
 
-  it('缺令牌（从未登录）时弹的也是令牌框', async () => {
+  it('缺令牌（从未登录）时弹的也是统一认证框', async () => {
     const app = loadApp({
       sessionData: { role: 'guest', open: false, hasAdmin: false, hasVisitor: false, hasToken: true, sessionValid: true, expiresAt: Date.now() + 3600000 },
       apiBody: { code: 1, msg: '需要访问令牌', needToken: true },
     });
     await app.settle();
-    assert.equal(visible(app.el('tokenModal')), true, '应该弹令牌框');
+    assert.equal(visible(app.el('loginModal')), true, '应该弹出认证框');
+    assert.match(app.el('loginHint').textContent, /访问令牌/);
+  });
+});
+
+describe('统一登录入口', () => {
+  it('一个输入框同时提交口令与令牌摘要，并按返回的身份落地', async () => {
+    const app = loadApp({
+      sessionData: { role: 'guest', open: false, hasAdmin: true, hasVisitor: false, hasToken: true, sessionValid: true, expiresAt: Date.now() + 3600000 },
+      apiStatus: 200,
+      apiBody: { code: 0, data: { items: [], total: 0, page: 1, pageSize: 50, totalPages: 1, allTotal: 0 } },
+      loginResult: { code: 0, data: { token: 'sess-1', role: 'admin', via: 'password', expiresAt: Date.now() + 3600000 } },
+    });
+    await app.settle();
+
+    // 主动打开登录框：提示里应把服务端配置的可用凭据都列出来
+    app.el('loginBtn').dispatch('click');
+    assert.equal(visible(app.el('loginModal')), true, '应该打开认证框');
+    assert.match(app.el('loginHint').textContent, /管理员口令/);
+    assert.match(app.el('loginHint').textContent, /访问令牌/);
+
+    app.el('loginPassword').value = 'my-secret';
+    app.el('loginOk').dispatch('click');
+    await app.settle(150);
+
+    const login = app.requests.find((item) => item.url.indexOf('/api/auth/login') >= 0);
+    assert.ok(login, '应该提交登录请求');
+    const digests = JSON.parse(login.body).digests;
+    assert.ok(digests.password, '应提交管理员口令摘要');
+    assert.ok(digests.token, '应同时提交令牌摘要');
+    assert.equal(digests.visitorPassword, undefined, '未配置访客口令时不该提交它');
+    assert.equal(app.storage.get('localsend.session'), 'sess-1', '应保存服务端签发的会话');
+    assert.equal(visible(app.el('loginModal')), false, '成功后应关闭弹窗');
   });
 });

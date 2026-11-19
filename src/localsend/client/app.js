@@ -107,8 +107,6 @@
    *  - 用访问令牌进来的：令牌变了或会话过期了，要重新输令牌
    */
   function handleAuthFailure(json) {
-    var needToken = !!(json && json.needToken);
-    var wasPasswordUser = authMethod === 'password' || sessionInfo.role === 'admin' || sessionInfo.role === 'visitor';
     var first = !authBlocked;
     // 短路：后续请求在本地就被拦下，不再发往服务端
     authBlocked = true;
@@ -126,14 +124,25 @@
     // 已经在重新认证流程里了，不再重复弹窗
     if (!first) return;
     var msg = (json && json.msg) || '';
-    if (!needToken && wasPasswordUser) {
-      openLoginModal(msg || '会话已失效，请重新登录');
-    } else {
-      // 会话失效时，之前保存的令牌再自动试一次；
-      // 试过了还不行才让用户手输，避免明明令牌没变却要重新敲一遍
-      tokenAutoTried = false;
-      openTokenModal(msg || '需要访问令牌', needToken ? '需要访问令牌' : '会话已失效，请重新验证');
+    // 之前用访问令牌进来的：先拿保存的令牌自动换一次，失败再让用户输入
+    if (authMethod === 'token' && accessToken && !tokenAutoTried && !tokenExchangePending) {
+      tokenAutoTried = true;
+      tokenExchangePending = true;
+      exchangeToken(accessToken)
+        .then(function () {
+          refreshSession().then(function (ok) {
+            if (ok) startApp();
+          });
+        })
+        .catch(function () {
+          openLoginModal(msg || '会话已失效，请重新验证');
+        })
+        .then(function () {
+          tokenExchangePending = false;
+        });
+      return;
     }
+    openLoginModal(msg || '会话已失效，请重新验证');
   }
 
   /**
@@ -344,13 +353,25 @@
     authBlocked = false;
   }
 
-  /** 打开登录弹窗 */
+  /** 当前可用的凭据类型，用于登录框提示（服务端已告知配置了哪几种） */
+  function loginHintText() {
+    if (sessionInfo.open) return '当前为开放模式，无需登录';
+    var parts = [];
+    if (sessionInfo.hasAdmin) parts.push('管理员口令');
+    if (sessionInfo.hasVisitor) parts.push('访客口令');
+    if (sessionInfo.hasToken) parts.push('访问令牌');
+    if (!parts.length) return '请输入口令或访问令牌';
+    return '请输入' + parts.join(' 或 ');
+  }
+
+  /** 打开登录弹窗（口令与访问令牌共用一个入口） */
   function openLoginModal(msg) {
     var err = $('loginError');
     if (msg) {
       err.textContent = msg;
       err.classList.remove('hidden');
     }
+    $('loginHint').textContent = loginHintText();
     $('loginModal').classList.remove('hidden');
     setTimeout(function () { $('loginPassword').focus(); }, 60);
   }
@@ -365,15 +386,17 @@
   /**
    * 提交登录。
    *
-   * 口令在浏览器里用服务端公开的盐值派生成摘要后再提交，
-   * 明文口令与摘要都不会出现在 URL 里。
+   * 管理员口令、访客口令、访问令牌的摘要一起算、一起提交，
+   * 由服务端判断用户手里拿的是哪一种。
+   * 这样前端只需要一个输入框，用户不必先分辨「我该输哪一个」。
+   * 明文凭据始终留在浏览器里，网络上只有摘要。
    */
   function submitLogin() {
     var input = $('loginPassword');
-    var pwd = input.value;
+    var secret = input.value;
     var err = $('loginError');
-    if (!pwd) {
-      err.textContent = '请输入口令';
+    if (!secret) {
+      err.textContent = '请输入口令或访问令牌';
       err.classList.remove('hidden');
       return;
     }
@@ -381,12 +404,13 @@
     fetchSalts()
       .then(function (salts) {
         var digests = {};
-        // 管理员口令与访客口令用不同的盐值，两种都算一遍，服务端自己判断是哪一个
-        var admin = digestOf(salts, 'password', pwd);
-        var visitor = digestOf(salts, 'visitorPassword', pwd);
+        var admin = digestOf(salts, 'password', secret);
+        var visitor = digestOf(salts, 'visitorPassword', secret);
+        var token = digestOf(salts, 'token', secret);
         if (admin) digests.password = admin;
         if (visitor) digests.visitorPassword = visitor;
-        if (!admin && !visitor) throw new Error('服务端未启用口令登录');
+        if (token) digests.token = token;
+        if (!admin && !visitor && !token) throw new Error('服务端未启用口令或令牌验证');
         return fetch(API + '/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -400,18 +424,30 @@
       })
       .then(function (out) {
         if (out.status !== 200 || out.json.code !== 0) {
-          err.textContent = out.json.msg || '口令不正确';
+          err.textContent = out.json.msg || '口令或访问令牌不正确';
           err.classList.remove('hidden');
           input.select();
           return;
         }
-        applySession(out.json.data, 'password');
+        var data = out.json.data || {};
+        applySession(data, data.via === 'token' ? 'token' : 'password');
+        // 用访问令牌进来的：记住它，会话过期时可以自动换一次，不必让用户重敲
+        if (data.via === 'token') {
+          accessToken = secret;
+          try {
+            localStorage.setItem(TOKEN_STORAGE_KEY, secret);
+          } catch (e) {
+            /* 忽略存储失败 */
+          }
+        }
         input.value = '';
         err.classList.add('hidden');
         $('loginModal').classList.add('hidden');
-        toast('已登录：' + roleName(out.json.data.role), 'ok');
+        toast('已验证：' + roleName(data.role), 'ok');
         // 重新拉取身份并刷新列表，按新角色显示或隐藏操作入口
-        refreshSession().then(function (ok) { if (ok) startApp(); });
+        refreshSession().then(function (ok) {
+          if (ok) startApp();
+        });
       })
       .catch(function (e) {
         err.textContent = (e && e.message) || '登录失败，请重试';
@@ -421,54 +457,10 @@
   }
 
   /**
-   * 打开访问令牌输入弹窗。
-   *
-   * title 用于区分「从没用过令牌」与「会话失效要重新换」两种情况，
-   * 免得用户以为要重新输一遍明明没变过的令牌。
-   */
-  function openTokenModal(msg, title) {
-    var show = function (text) {
-      // 弹窗已经开着时不再重复处理，免得把用户正在输入的内容冲掉
-      if (!$('tokenModal').classList.contains('hidden')) return;
-      var err = $('tokenError');
-      if (text) {
-        err.textContent = text;
-        err.classList.remove('hidden');
-      }
-      $('tokenTitle').textContent = title || '需要访问令牌';
-      $('tokenModal').classList.remove('hidden');
-      setTimeout(function () { $('tokenPassword').focus(); }, 60);
-    };
-    // 之前输入过的令牌：自动换一次会话（本次页面生命周期内只试一次），失败才问用户
-    if (accessToken && !tokenAutoTried && !tokenExchangePending) {
-      tokenAutoTried = true;
-      tokenExchangePending = true;
-      exchangeToken(accessToken)
-        .then(function () {
-          refreshSession().then(function (ok) { if (ok) startApp(); });
-        })
-        .catch(function (e) {
-          show((e && e.message) || msg || '请输入访问令牌');
-        })
-        .then(function () { tokenExchangePending = false; });
-      return;
-    }
-    show(msg);
-  }
-
-  /** 关闭访问令牌输入弹窗 */
-  function closeTokenModal() {
-    $('tokenModal').classList.add('hidden');
-    $('tokenError').classList.add('hidden');
-    $('tokenPassword').value = '';
-  }
-
-  /**
-   * 用访问令牌换取会话。
+   * 用访问令牌换取会话（保留给「记住的令牌自动重连」与「改令牌后自动换会话」）。
    *
    * 令牌只在浏览器里派生成摘要，明文不会离开浏览器；
-   * 服务端签发的会话令牌才是之后所有请求里出现的东西，
-   * 原始令牌也不再出现在任何 URL 里。
+   * 服务端签发的会话令牌才是之后所有请求里出现的东西。
    */
   function exchangeToken(value) {
     return fetchSalts()
@@ -490,38 +482,12 @@
         if (out.status !== 200 || out.json.code !== 0) throw new Error(out.json.msg || '访问令牌不正确');
         applySession(out.json.data, 'token');
         accessToken = value;
-        try { localStorage.setItem(TOKEN_STORAGE_KEY, value); } catch (e) { /* 忽略存储失败 */ }
+        try {
+          localStorage.setItem(TOKEN_STORAGE_KEY, value);
+        } catch (e) {
+          /* 忽略存储失败 */
+        }
         return out.json.data;
-      });
-  }
-
-  /** 提交访问令牌 */
-  function submitToken() {
-    var input = $('tokenPassword');
-    var value = input.value.trim();
-    var err = $('tokenError');
-    if (!value) {
-      err.textContent = '请输入访问令牌';
-      err.classList.remove('hidden');
-      return;
-    }
-    $('tokenOk').disabled = true;
-    tokenAutoTried = true;
-    tokenExchangePending = true;
-    exchangeToken(value)
-      .then(function () {
-        closeTokenModal();
-        toast('访问令牌已验证', 'ok');
-        refreshSession().then(function (ok) { if (ok) startApp(); });
-      })
-      .catch(function (e) {
-        err.textContent = (e && e.message) || '访问令牌不正确';
-        err.classList.remove('hidden');
-        input.select();
-      })
-      .then(function () {
-        tokenExchangePending = false;
-        $('tokenOk').disabled = false;
       });
   }
 
@@ -3440,7 +3406,7 @@
           toast(newToken ? '访问令牌已更新，旧令牌随即失效' : '访问令牌已停用，访问不再需要令牌', 'ok');
           if (newToken) {
             exchangeToken(newToken).catch(function () {
-              openTokenModal('请重新输入访问令牌');
+              openLoginModal('请重新输入口令或访问令牌');
             });
           }
         }
@@ -3474,27 +3440,9 @@
   $('logoutBtn').addEventListener('click', logout);
   $('loginCancel').addEventListener('click', closeLoginModal);
   $('loginOk').addEventListener('click', submitLogin);
-  $('loginUseToken').addEventListener('click', function () {
-    // 服务端可能只配了令牌，也可能只配了口令：让用户自己切换，
-    // 免得卡在「该输哪一个」上
-    closeLoginModal();
-    openTokenModal('');
-  });
   $('loginModal').addEventListener('click', function (e) { if (e.target === $('loginModal')) closeLoginModal(); });
   $('loginPassword').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') submitLogin();
-  });
-
-  // 访问令牌输入
-  $('tokenCancel').addEventListener('click', closeTokenModal);
-  $('tokenOk').addEventListener('click', submitToken);
-  $('tokenUseLogin').addEventListener('click', function () {
-    closeTokenModal();
-    openLoginModal('');
-  });
-  $('tokenModal').addEventListener('click', function (e) { if (e.target === $('tokenModal')) closeTokenModal(); });
-  $('tokenPassword').addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') submitToken();
   });
 
   // 设置面板

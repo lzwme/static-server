@@ -306,4 +306,36 @@ describe('LocalSend 访问令牌保护', () => {
     assert.equal(status, 200);
     assert.ok(json.data.url);
   });
+
+  it('统一登录入口也接受访问令牌摘要', async () => {
+    // 前端只有一个输入框：令牌与口令一起提交，由服务端判断是哪一种
+    const salts = await fetchSalts(base);
+    const { status, json } = await call(base, '/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ digests: { token: digestOf(salts, 'token', 'secret-key') } }),
+    });
+    assert.equal(status, 200);
+    assert.equal(json.code, 0);
+    assert.equal(json.data.via, 'token');
+    assert.ok(json.data.token);
+
+    const list = await fetch(`${base}/localsend/api/list`, {
+      headers: { 'X-Localsend-Session': json.data.token },
+    });
+    assert.equal(list.status, 200);
+  });
+
+  it('统一登录入口收到的错误凭据一律拒绝', async () => {
+    const salts = await fetchSalts(base);
+    const { status } = await call(base, '/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        digests: {
+          password: digestOf(salts, 'password', 'nope'),
+          token: digestOf(salts, 'token', 'nope'),
+        },
+      }),
+    });
+    assert.equal(status, 401);
+  });
 });

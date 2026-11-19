@@ -601,15 +601,17 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     res.json({ code: 0, data: { iterations: SECRET_ITERATIONS, secrets: auth.secrets() } });
   });
 
-  // 口令登录：提交口令摘要，服务端比对后签发会话
+  // 口令登录：提交摘要，服务端比对后签发会话。
+  // 管理员口令、访客口令、访问令牌都从这一个入口进来——
+  // 前端只显示一个输入框，用户不必先分辨自己手里拿的是哪一种。
   app.post('/localsend/api/auth/login', express.json({ limit: '4kb' }), (req: Request, res: Response) => {
-    const digests = (req.body?.digests || {}) as { password?: string; visitorPassword?: string };
+    const digests = (req.body?.digests || {}) as { password?: string; visitorPassword?: string; token?: string };
     const session = auth.login(digests);
     if (!session) {
       // 不区分口令不存在还是口令错误，避免暴露配置细节
-      return void res.status(401).json({ code: 1, msg: '口令不正确' });
+      return void res.status(401).json({ code: 1, msg: '口令或访问令牌不正确' });
     }
-    res.json({ code: 0, data: { token: session.token, role: session.role, expiresAt: session.expiresAt } });
+    res.json({ code: 0, data: { token: session.token, role: session.role, via: session.via, expiresAt: session.expiresAt } });
   });
 
   // 访问令牌换会话：令牌只在这一步参与，之后请求里只有会话令牌

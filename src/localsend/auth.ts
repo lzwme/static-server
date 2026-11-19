@@ -60,8 +60,8 @@ export interface Auth {
   readonly hasToken: boolean;
   /** 各密钥的公开盐值信息，供客户端派生摘要 */
   secrets: () => SecretInfo[];
-  /** 校验口令摘要并建立会话，匹配不上返回 null */
-  login: (digests: { password?: string; visitorPassword?: string }) => Session | null;
+  /** 校验口令或令牌摘要并建立会话，匹配不上返回 null */
+  login: (digests: { password?: string; visitorPassword?: string; token?: string }) => Session | null;
   /** 校验访问令牌摘要并建立会话，匹配不上返回 null */
   loginByToken: (digest: string) => Session | null;
   /** 注销会话，返回是否确实注销了 */
@@ -155,6 +155,9 @@ export function createAuth(options: AuthOptions = {}): Auth {
       // 管理员口令优先
       if (input.password && secrets.verify('password', input.password)) return issue('admin', 'password');
       if (input.visitorPassword && secrets.verify('visitorPassword', input.visitorPassword)) return issue('visitor', 'password');
+      // 访问令牌也走同一个入口：前端只显示一个输入框，
+      // 用户不必先分辨自己手里拿的是口令还是令牌
+      if (input.token && secrets.verify('token', input.token)) return issue(baseRole(), 'token');
       return null;
     },
     loginByToken(digest) {
