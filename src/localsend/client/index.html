@@ -38,6 +38,8 @@
         LocalSend
       </h1>
       <p class="text-xs sm:text-sm text-slate-400 mt-1">局域网文件传输 · 同网段设备扫码即可访问</p>
+      <!-- 这台机器在做什么：存储位置、保留策略、当前权限 -->
+      <p id="hostInfo" class="text-[11px] text-slate-500 mt-1 break-all"></p>
     </div>
     <div class="flex flex-col items-start sm:items-end gap-2">
       <div class="text-left sm:text-right">
@@ -140,6 +142,16 @@
         </select>
         <button id="orderBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 hover:bg-slate-700 transition">↓ 降序</button>
       </div>
+    </div>
+    <!-- 首次使用引导：只在「目录里一个文件都没有」时出现 -->
+    <div id="firstRun" class="hidden mb-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+      <div class="text-sm text-slate-200 font-medium mb-2">三步开始传文件</div>
+      <ol class="text-xs text-slate-400 space-y-1.5 list-decimal list-inside">
+        <li>确认手机与这台电脑连的是同一个 Wi-Fi 或局域网</li>
+        <li>用手机扫左侧二维码打开本页（打不开就换个地址再扫）</li>
+        <li>点右下角 📤 选文件，或在本页拖拽文件进来</li>
+      </ol>
+      <p class="text-[11px] text-slate-500 mt-2">文件保存在这台电脑上，不经过云端；同网段的其它设备也能看到。</p>
     </div>
     <!-- 存储用量：有配额时显示进度，无配额时只显示已用 -->
     <div id="usageBar" class="hidden mb-3">

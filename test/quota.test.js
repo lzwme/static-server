@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { describe, it } = require('node:test');
-const { startServer, tempDir, removeDir, upload } = require('./helpers');
+const { startServer, tempDir, removeDir, upload, login } = require('./helpers');
 
 /** 递归统计（含子目录），用于和服务的口径对照 */
 function sizeOf(dir) {
@@ -106,6 +106,27 @@ describe('用量接口', () => {
       const usage = await fetch(`${server.base}/localsend/api/usage`).then((r) => r.json());
       assert.equal(usage.data.limit, 0);
       assert.equal(usage.data.used, 0);
+    } finally {
+      await server.close();
+      removeDir(dir);
+    }
+  });
+
+  it('存储路径只对管理员可见', async () => {
+    const dir = tempDir('ls-usage-dir-');
+    // 配了管理员口令：匿名是 guest，看不到本机路径
+    const server = await startServer(dir, { password: 'admin-pwd' });
+    try {
+      const guest = await fetch(`${server.base}/localsend/api/usage`).then((r) => r.json());
+      assert.equal(guest.data.dir, '', '未登录不应暴露本机存储路径');
+
+      const session = await login(server.base, 'admin-pwd');
+      const admin = await fetch(`${server.base}/localsend/api/usage`, {
+        headers: { 'X-Localsend-Session': session },
+      }).then((r) => r.json());
+      assert.equal(admin.data.dir, dir, '管理员应能看到存储路径');
+      assert.equal(typeof admin.data.trashDays, 'number');
+      assert.equal(typeof admin.data.maxSize, 'number');
     } finally {
       await server.close();
       removeDir(dir);

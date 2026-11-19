@@ -156,6 +156,8 @@ describe('票据接口', () => {
       assert.equal(resp.status, 200);
       assert.match(resp.headers.get('content-type') || '', /text\/event-stream/);
       controller.abort();
+      // 给服务端一点时间回收连接，避免与随后关闭服务的动作竞争
+      await new Promise((resolve) => setTimeout(resolve, 50));
     } finally {
       await server.close();
       removeDir(dir);

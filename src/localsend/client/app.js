@@ -49,6 +49,8 @@
   }
   // 当前身份：role 为 admin / visitor / guest / open
   var sessionInfo = { role: 'open', open: true, hasAdmin: false, hasVisitor: false };
+  /** 最近一次拿到的用量信息（头部那行机器信息要用） */
+  var lastUsage = null;
 
   /** 是否可以执行危险操作（删除、整理目录、撤销分享等） */
   function isAdmin() {
@@ -269,6 +271,8 @@
       // 用内联样式控制，避免与 hidden / sm:block 等类冲突
       el.style.display = ok ? '' : 'none';
     }
+    // 权限变化会影响「未设口令」的提示，头部信息跟着刷新
+    updateHostInfo(lastUsage);
   }
 
   /**
@@ -1553,6 +1557,7 @@
       .then(function (json) {
         if (json.code !== 0) return;
         var d = json.data || {};
+        lastUsage = d;
         var used = Number(d.used) || 0;
         var limit = Number(d.limit) || 0;
         var trash = Number(d.trash) || 0;
@@ -1571,10 +1576,29 @@
         var pct = Math.min(100, Math.max(0, Math.round((used / limit) * 100)));
         fill.style.width = pct + '%';
         fill.className = 'h-full transition-all ' + (pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-amber-500' : 'bg-emerald-500');
+        updateHostInfo(d);
       })
       .catch(function () {
         /* 用量拿不到不影响主流程 */
       });
+  }
+
+  /**
+   * 刷新头部那行「这台机器在做什么」。
+   *
+   * 首次进入的疑问往往是：文件存哪、能放多久、谁能看到。
+   * 这里用一行把关键信息说清楚，避免用户去翻配置。
+   */
+  function updateHostInfo(usage) {
+    var el = $('hostInfo');
+    if (!el) return;
+    var parts = [];
+    if (usage && usage.dir) parts.push('存储：' + usage.dir);
+    if (usage && usage.trashDays) parts.push('回收站保留 ' + usage.trashDays + ' 天');
+    if (usage && usage.autoCleanDays) parts.push('超过 ' + usage.autoCleanDays + ' 天自动清理');
+    if (usage && usage.maxSize) parts.push('单文件上限 ' + fmtSize(usage.maxSize));
+    if (sessionInfo.open) parts.push('未设口令：同网段设备可直接访问');
+    el.textContent = parts.join(' · ');
   }
 
   /** 文件变动后同时刷新列表、筛选选项与用量 */
@@ -1600,7 +1624,12 @@
     }
     wrap.innerHTML = '';
     var isEmpty = allCount === 0;
-    $('emptyTip').classList.toggle('hidden', !isEmpty);
+    var hasFilter = !!(searchKeyword || dirFilter || extFilter || inboxMode);
+    // 首次使用（目录里一个文件都没有、也没加筛选）时给三步引导，
+    // 这时候「空列表」本身不说明该干什么
+    var showFirstRun = isEmpty && !hasFilter;
+    $('firstRun').classList.toggle('hidden', !showFirstRun);
+    $('emptyTip').classList.toggle('hidden', !isEmpty || showFirstRun);
     if (!isEmpty && items.length === 0) {
       $('emptyTip').classList.remove('hidden');
       $('emptyTip').textContent = searchKeyword

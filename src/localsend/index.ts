@@ -1148,6 +1148,11 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
         files: entries.length,
         trash: trashEntries.reduce((sum, item) => sum + (item.size || 0), 0),
         trashCount: trashEntries.length,
+        // 存储路径含用户名，属本机信息：只给管理员看
+        dir: canManage(res.locals.role) ? dir : '',
+        trashDays: live.trashDays,
+        autoCleanDays: live.autoCleanDays,
+        maxSize: live.maxSize,
       },
     });
   });
