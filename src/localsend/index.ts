@@ -31,6 +31,7 @@ import { batchRename, moveFiles, parseRenameRule, renameFile, uniqueName } from 
 import { buildPasteName, contentHash, parsePaste, parseStrategy, timeStampTag } from './paste';
 import { resolveInDir, safeRelPath } from './path';
 import { collectDirs, collectExts, filterEntries, paginate, parseListQuery, ROOT_DIR, sortEntries } from './query';
+import { SECRET_ITERATIONS } from './secret';
 import { createSettingsStore, normalizeSetting, SETTING_DEFS, type SettingKey } from './settings';
 import { createShareStore, shareInlineMime, shareInlineType } from './share';
 import { cleanupTempFiles, isTempFileName } from './temp';
@@ -253,13 +254,6 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   /** 当前禁止上传/保存的扩展名集合（含点、小写），运行时修改立即生效 */
   const getBlockExts = (): Set<string> => new Set(live.blockExtensions.map((e) => (e.startsWith('.') ? e : `.${e}`).toLowerCase()));
 
-  // 访问防护：令牌 / 频率限制 / 并发限制
-  const guard = createGuard({
-    token: () => live.token,
-    maxConcurrent: () => live.maxConcurrent,
-    rateLimit: () => live.rateLimit,
-  });
-
   // 回收站：删除的文件先移入此处，可在一段时间内还原
   const trash = createTrash({
     dir,
@@ -280,12 +274,11 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
 
   const port = config.port || 80;
   const ipUrl = `http://${getIp() || 'localhost'}:${port}`;
-  // 配置了令牌时，把令牌带上，方便直接扫码访问
-  const keyQuery = live.token ? `?key=${encodeURIComponent(live.token)}` : '';
   logger.log(color.green('LocalSend : '.padStart(15, ' ')), color.greenBright('局域网文件传输功能已开启'));
   logger.log(color.green('LocalSend DIR : '.padStart(15, ' ')), color.cyanBright(dir));
-  logger.log(color.green('LocalSend URL : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend${keyQuery}`));
-  if (live.token) logger.log(color.green('LocalSend KEY : '.padStart(15, ' ')), color.yellowBright('已启用访问令牌'));
+  logger.log(color.green('LocalSend URL : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend`));
+  if (live.token)
+    logger.log(color.green('LocalSend KEY : '.padStart(15, ' ')), color.yellowBright('已启用访问令牌（访问时需输入令牌换取会话）'));
 
   // 分享链接：拿到链接的人无需访问令牌即可下载指定文件（需在令牌校验之前注册）
   const shareStore = createShareStore();
@@ -333,48 +326,38 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   // 访问控制
   //
   // 注册顺序很关键：
-  //  1. 分享下载页与 WebDAV 必须放在令牌校验之前
-  //     —— 分享链接本就是免登录的，WebDAV 走 Basic Auth 带不了 ?key=
-  //  2. 令牌校验之后才是全部接口，任何接口都不能绕过
-  //  3. 身份分级再叠在令牌之上，用来区分危险操作的权限
-  // ---------------------------------------------------------------------------
-  // WebDAV 挂载接口：把存储目录暴露为网络盘（资源管理器 / iOS 文件 App 均可挂载）。
-  if (ls.webdav !== false) {
-    const davHandler = createWebDavHandler({
-      dir,
-      token: () => live.token,
-      password: () => live.password,
-      visitorPassword: () => live.visitorPassword,
-      maxSize: () => live.maxSize,
-      maxTotalSize: () => live.maxTotalSize,
-      blockExtensions: () => live.blockExtensions,
-      basePath: '/localsend/dav',
-    });
-    app.use('/localsend/dav', davHandler);
-    logger.log(color.green('LocalSend DAV : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend/dav`));
-  }
-
-  // 访问令牌校验（配置了 token 才生效），覆盖页面与所有接口
-  app.use('/localsend', guard.requireToken);
-  // 接口频率限制
-  app.use('/localsend/api', guard.rateLimit);
-
+  //  1. 身份与摘要库要先建好：WebDAV 与令牌校验都要用到它
+  //  2. 分享下载页与 WebDAV 必须放在令牌校验之前
+  //     —— 分享链接本就是免登录的，WebDAV 走 Basic Auth 带不了自定义请求头
+  //  3. 认证接口（取盐值、口令登录、令牌换会话）也要放在令牌校验之前，
+  //     否则用户还没拿到会话就无从登录
+  //  4. 令牌校验之后才是全部业务接口，任何接口都不能绕过
+  //  5. 身份分级再叠在令牌之上，用来区分危险操作的权限
   // ---------------------------------------------------------------------------
   // 身份与权限
   //
   // token 是站点级大门锁，这里是进门后的身份分级：
-  // 管理员能删除与整理，访客只能上传下载，没登录的是只读。
+  // 管理员能删除与整理，访客只能上传下载。
+  // 没有配置访客口令时，未登录的人也能上传下载（删除与整理仍需管理员口令）。
   // 没有配置任何口令时保持开放模式，行为与以前完全一致。
-  // ---------------------------------------------------------------------------
   const auth = createAuth({
     password: live.password,
     visitorPassword: live.visitorPassword,
+    token: live.token,
     sessionTtl: live.sessionTtl,
   });
   if (auth.open) {
     logger.log(color.yellow('LocalSend 权限 :'.padStart(15, ' ')), color.yellow('未设置口令，任何人都可以删除与整理文件'));
+  } else if (live.visitorPassword) {
+    logger.log(
+      color.green('LocalSend 权限 :'.padStart(15, ' ')),
+      color.cyanBright('已启用身份分级（危险操作需要管理员口令，上传下载需要访客口令）'),
+    );
   } else {
-    logger.log(color.green('LocalSend 权限 :'.padStart(15, ' ')), color.cyanBright('已启用身份分级（危险操作需要管理员口令）'));
+    logger.log(
+      color.green('LocalSend 权限 :'.padStart(15, ' ')),
+      color.cyanBright('已启用身份分级（危险操作需要管理员口令，上传下载无需口令）'),
+    );
   }
   if (live.visitorPassword && !auth.hasAdmin) {
     logger.log(color.yellow('LocalSend 权限 :'.padStart(15, ' ')), color.yellow('只配置了访客口令，删除与整理将无法执行'));
@@ -385,7 +368,75 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     return String(req.get('X-Localsend-Session') || req.query.session || '');
   }
 
-  /** 身份中间件：把当前角色挂到 res.locals.role */
+  // 访问防护：令牌 / 频率限制 / 并发限制
+  const guard = createGuard({
+    hasToken: () => auth.hasToken,
+    // 请求头里的令牌摘要：脚本等非浏览器客户端可以直接用
+    verifyKey: (digest) => auth.verifyToken(digest),
+    verifySession: (token) => !!auth.get(token),
+    maxConcurrent: () => live.maxConcurrent,
+    rateLimit: () => live.rateLimit,
+  });
+
+  // WebDAV 挂载接口：把存储目录暴露为网络盘（资源管理器 / iOS 文件 App 均可挂载）。
+  if (ls.webdav !== false) {
+    const davHandler = createWebDavHandler({
+      dir,
+      hasToken: () => auth.hasToken,
+      // WebDAV 客户端只能用 Basic Auth 传明文，服务端用盐值现场算摘要再比对
+      verifyToken: (presented) => auth.verifyTokenValue(presented),
+      verifyPlain: (value) => auth.plainRole(value),
+      isOpen: () => auth.open,
+      hasVisitor: () => auth.hasVisitor,
+      maxSize: () => live.maxSize,
+      maxTotalSize: () => live.maxTotalSize,
+      blockExtensions: () => live.blockExtensions,
+      basePath: '/localsend/dav',
+    });
+    app.use('/localsend/dav', davHandler);
+    logger.log(color.green('LocalSend DAV : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend/dav`));
+  }
+
+  // ---------------------------------------------------------------------------
+  // 接口频率限制
+  //
+  // 放在认证接口之前：盐值/登录/换令牌这三个接口免鉴权，
+  // 而摘要比对本身要跑 PBKDF2，是最耗 CPU 的路径。
+  // 不限流的话，一次死循环式的重复提交就能把服务端的 CPU 打满。
+  // ---------------------------------------------------------------------------
+  app.use('/localsend/api', guard.rateLimit);
+
+  // ---------------------------------------------------------------------------
+  // 认证接口（免鉴权）：客户端先取盐值算出摘要，再换取会话令牌
+  // ---------------------------------------------------------------------------
+
+  // 各密钥的公开盐值：客户端据此派生出摘要，明文口令与原始令牌都不出浏览器
+  app.get('/localsend/api/auth/salt', (_req: Request, res: Response) => {
+    res.json({ code: 0, data: { iterations: SECRET_ITERATIONS, secrets: auth.secrets() } });
+  });
+
+  // 口令登录：提交口令摘要，服务端比对后签发会话
+  app.post('/localsend/api/auth/login', express.json({ limit: '4kb' }), (req: Request, res: Response) => {
+    const digests = (req.body?.digests || {}) as { password?: string; visitorPassword?: string };
+    const session = auth.login(digests);
+    if (!session) {
+      // 不区分口令不存在还是口令错误，避免暴露配置细节
+      return void res.status(401).json({ code: 1, msg: '口令不正确' });
+    }
+    res.json({ code: 0, data: { token: session.token, role: session.role, expiresAt: session.expiresAt } });
+  });
+
+  // 访问令牌换会话：令牌只在这一步参与，之后请求里只有会话令牌
+  app.post('/localsend/api/auth/token', express.json({ limit: '4kb' }), (req: Request, res: Response) => {
+    const session = auth.loginByToken(String(req.body?.digest || ''));
+    if (!session) return void res.status(401).json({ code: 1, msg: '访问令牌不正确' });
+    res.json({ code: 0, data: { token: session.token, role: session.role, expiresAt: session.expiresAt } });
+  });
+
+  // 访问令牌校验（配置了 token 才生效）：页面与静态资源放行，接口需要会话或令牌摘要
+  app.use('/localsend', guard.requireAuth);
+
+  // 身份中间件：把当前角色挂到 res.locals.role
   app.use('/localsend/api', (req: Request, res: Response, next: NextFunction) => {
     res.locals.role = auth.roleOf(sessionTokenOf(req));
     next();
@@ -400,20 +451,12 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
 
   /** 需要写入权限：上传、粘贴、创建分享等 */
   function requireWrite(_req: Request, res: Response, next: NextFunction) {
-    if (canWrite(res.locals.role)) return next();
-    res.status(403).json({ code: 1, msg: '当前为只读访问，无法上传', needAuth: true });
+    // 未配置访客口令时，任何人都能上传下载；配置了则必须先登录
+    if (canWrite(res.locals.role, !!live.visitorPassword)) return next();
+    res.status(403).json({ code: 1, msg: '上传需要访客口令，请先登录', needAuth: true });
   }
 
-  // 登录 / 注销 / 查询当前身份
-  app.post('/localsend/api/login', express.json({ limit: '4kb' }), (req: Request, res: Response) => {
-    const session = auth.login(req.body?.password);
-    if (!session) {
-      // 不区分口令不存在还是口令错误，避免暴露配置细节
-      return void res.status(401).json({ code: 1, msg: '口令不正确' });
-    }
-    res.json({ code: 0, data: { token: session.token, role: session.role, expiresAt: session.expiresAt } });
-  });
-
+  // 注销 / 查询当前身份
   app.post('/localsend/api/logout', (req: Request, res: Response) => {
     const token = sessionTokenOf(req);
     auth.logout(token);
@@ -429,6 +472,12 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
         open: auth.open,
         hasAdmin: auth.hasAdmin,
         hasVisitor: !!live.visitorPassword,
+        // 是否配置了访问令牌：前端据此决定要不要提示输入令牌
+        hasToken: auth.hasToken,
+        // 当前请求带的会话是否有效。
+        // 不能靠角色推断：用访问令牌换来的会话角色也是 guest，
+        // 靠角色判断会把刚换到的会话误当成失效会话清掉。
+        sessionValid: !!session,
         expiresAt: session?.expiresAt ?? 0,
       },
     });
@@ -565,6 +614,10 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     if (key === 'password' || key === 'visitorPassword' || key === 'sessionTtl') {
       auth.update({ password: live.password, visitorPassword: live.visitorPassword, sessionTtl: live.sessionTtl }, sessionTokenOf(req));
     }
+    // 令牌变更：只作废「用令牌换来的会话」，口令登录的会话继续有效
+    if (key === 'token') {
+      auth.update({ token: live.token }, sessionTokenOf(req));
+    }
   }
 
   // 查看设置（仅管理员）
@@ -583,7 +636,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
       if (!(key in SETTING_DEFS)) return void res.status(400).json({ code: 1, msg: `未知的配置项：${key}` });
     }
     // 改口令需要再次验证当前管理员口令，防止会话被劫持后改掉口令
-    if ((keys.includes('password') || keys.includes('visitorPassword')) && !auth.verifyAdmin(req.body?.currentPassword)) {
+    // 客户端提交的是当前口令的摘要，明文口令同样不上网
+    if ((keys.includes('password') || keys.includes('visitorPassword')) && !auth.verifyAdmin(req.body?.currentPasswordDigest)) {
       return void res.status(403).json({ code: 1, msg: '当前管理员口令不正确', needAuth: true });
     }
     // 先全部校验通过再逐项生效，避免出现「改了一半」

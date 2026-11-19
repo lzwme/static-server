@@ -46,63 +46,98 @@ function mockRes() {
 }
 
 describe('访问令牌', () => {
+  /** 构造一个启用了令牌的防护：令牌摘要为 'digest' */
+  function guardWithToken() {
+    return createGuard({
+      hasToken: () => true,
+      verifyKey: (digest) => digest === 'digest',
+      verifySession: (token) => token === 'session-ok',
+    });
+  }
+
   it('未配置令牌时直接放行', () => {
     const guard = createGuard({});
     let called = false;
-    guard.requireToken(mockReq(), mockRes(), () => {
+    guard.requireAuth(mockReq(), mockRes(), () => {
       called = true;
     });
     assert.equal(called, true);
   });
 
-  it('令牌正确时放行', () => {
-    const guard = createGuard({ token: 'secret' });
+  it('请求头里的令牌摘要正确时放行', () => {
+    const guard = guardWithToken();
     let called = false;
-    guard.requireToken(mockReq({ query: { key: 'secret' } }), mockRes(), () => {
+    guard.requireAuth(mockReq({ headers: { 'X-Localsend-Key': 'digest' } }), mockRes(), () => {
+      called = true;
+    });
+    assert.equal(called, true);
+  });
+
+  it('会话令牌有效时放行', () => {
+    const guard = guardWithToken();
+    let called = false;
+    guard.requireAuth(mockReq({ headers: { 'X-Localsend-Session': 'session-ok' } }), mockRes(), () => {
+      called = true;
+    });
+    assert.equal(called, true);
+  });
+
+  it('SSE 等场景可以用查询参数带会话', () => {
+    const guard = guardWithToken();
+    let called = false;
+    guard.requireAuth(mockReq({ query: { session: 'session-ok' } }), mockRes(), () => {
       called = true;
     });
     assert.equal(called, true);
   });
 
   it('令牌错误时接口返回 401 JSON', () => {
-    const guard = createGuard({ token: 'secret' });
+    const guard = guardWithToken();
     const res = mockRes();
-    guard.requireToken(mockReq({ path: '/api/list', query: { key: 'wrong' } }), res, () => {});
+    guard.requireAuth(mockReq({ path: '/api/list', headers: { 'X-Localsend-Key': 'wrong' } }), res, () => {});
     assert.equal(res.statusCode, 401);
     assert.equal(res.body.code, 1);
+    assert.equal(res.body.needToken, true);
   });
 
-  it('令牌错误时页面返回 HTML 提示', () => {
-    const guard = createGuard({ token: 'secret' });
-    const res = mockRes();
-    guard.requireToken(mockReq({ path: '/', query: {} }), res, () => {});
-    assert.equal(res.statusCode, 401);
-    assert.match(String(res.body), /访问令牌/);
-  });
-
-  it('支持通过请求头携带令牌', () => {
-    const guard = createGuard({ token: 'secret' });
-    let called = false;
-    guard.requireToken(mockReq({ headers: { 'X-Localsend-Key': 'secret' } }), mockRes(), () => {
-      called = true;
-    });
-    assert.equal(called, true);
-  });
-
-  it('静态资源不校验令牌', () => {
-    const guard = createGuard({ token: 'secret' });
-    let called = false;
-    guard.requireToken(mockReq({ path: '/style.css' }), mockRes(), () => {
-      called = true;
-    });
-    assert.equal(called, true);
+  it('页面与静态资源照常放行，便于前端提示输入令牌', () => {
+    const guard = guardWithToken();
+    for (const path of ['/', '/style.css', '/app.js', '/crypto.js']) {
+      let called = false;
+      guard.requireAuth(mockReq({ path }), mockRes(), () => {
+        called = true;
+      });
+      assert.equal(called, true, path + ' 应该放行');
+    }
   });
 
   it('接口路径不能用静态后缀绕过校验', () => {
-    const guard = createGuard({ token: 'secret' });
+    const guard = guardWithToken();
     const res = mockRes();
-    guard.requireToken(mockReq({ path: '/api/download/a.css' }), res, () => {});
+    guard.requireAuth(mockReq({ path: '/api/download/a.css' }), res, () => {});
     assert.equal(res.statusCode, 401);
+  });
+
+  it('带了服务端不认的会话时提示会话失效，而不是缺令牌', () => {
+    // 客户端要靠这个区分弹「重新登录」还是弹「输入访问令牌」
+    const guard = guardWithToken();
+    const res = mockRes();
+    guard.requireAuth(mockReq({ headers: { 'X-Localsend-Session': 'stale' } }), res, () => {});
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body.needLogin, true);
+    assert.equal(res.body.needToken, undefined);
+  });
+
+  it('没配置令牌时带着失效会话也放行，按访客口径处理', () => {
+    // 没配令牌时接口不设大门锁：一次会话过期不该把整个页面锁死
+    const guard = createGuard({ verifySession: () => false });
+    let called = false;
+    const res = mockRes();
+    guard.requireAuth(mockReq({ headers: { 'X-Localsend-Session': 'stale' } }), res, () => {
+      called = true;
+    });
+    assert.equal(called, true);
+    assert.equal(res.statusCode, 200);
   });
 });
 

@@ -53,7 +53,7 @@ export const SETTING_DEFS: Record<SettingKey, SettingDef> = {
   token: {
     label: '访问令牌',
     kind: 'secret',
-    desc: '页面与所有接口都需要携带的钥匙。留空表示不启用令牌保护。修改后旧链接立即失效，需要重新扫码访问。',
+    desc: '启用后，访问页面时需要输入令牌换取会话。令牌不再出现在地址栏里，修改后旧令牌立即失效。',
     secret: true,
   },
   password: {
@@ -65,7 +65,7 @@ export const SETTING_DEFS: Record<SettingKey, SettingDef> = {
   visitorPassword: {
     label: '访客口令',
     kind: 'secret',
-    desc: '访客可上传下载，但不能删除与整理。留空表示不启用访客身份。',
+    desc: '设置后，未登录的人必须输入该口令才能上传下载；留空则任何人都可以上传下载（删除与整理始终需要管理员口令）。',
     secret: true,
   },
   sessionTtl: {

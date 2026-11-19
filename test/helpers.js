@@ -6,6 +6,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 /** 创建临时目录 */
 function tempDir(prefix = 'sserver-test-') {
@@ -119,4 +120,74 @@ function removeDir(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-module.exports = { tempDir, useTempConfig, startServer, upload, listFiles, listPage, listFacets, removeDir };
+/**
+ * 取回服务端公开的盐值。
+ *
+ * 口令与令牌都不再明文提交，客户端与服务端都用这枚盐值派生出摘要，
+ * 测试里也要按同样的方式算出摘要。
+ */
+async function fetchSalts(base) {
+  const resp = await fetch(`${base}/localsend/api/auth/salt`);
+  const json = await resp.json();
+  return json.data || { secrets: [] };
+}
+
+/** 用公开盐值算出摘要（与前端 crypto.js、服务端 secret.ts 完全一致） */
+function digestOf(salts, kind, secret) {
+  const info = (salts.secrets || []).find((item) => item.kind === kind);
+  if (!info) return '';
+  return crypto.pbkdf2Sync(String(secret), Buffer.from(info.salt, 'hex'), info.iterations, 32, 'sha256').toString('hex');
+}
+
+/**
+ * 用口令换取会话令牌。
+ *
+ * 与前端一致：先取盐值，再算出摘要提交，服务端只比对摘要。
+ */
+async function login(base, password) {
+  const salts = await fetchSalts(base);
+  const digests = {};
+  const admin = digestOf(salts, 'password', password);
+  const visitor = digestOf(salts, 'visitorPassword', password);
+  if (admin) digests.password = admin;
+  if (visitor) digests.visitorPassword = visitor;
+  const resp = await fetch(`${base}/localsend/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ digests }),
+  });
+  const json = await resp.json();
+  return json.code === 0 ? json.data.token : '';
+}
+
+/**
+ * 用访问令牌换取会话令牌。
+ *
+ * 令牌摘要放在请求体里，不进 URL；换取到的会话令牌之后放在请求头里。
+ */
+async function loginWithToken(base, token) {
+  const salts = await fetchSalts(base);
+  const digest = digestOf(salts, 'token', token);
+  const resp = await fetch(`${base}/localsend/api/auth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ digest }),
+  });
+  const json = await resp.json();
+  return json.code === 0 ? json.data.token : '';
+}
+
+module.exports = {
+  tempDir,
+  useTempConfig,
+  startServer,
+  upload,
+  listFiles,
+  listPage,
+  listFacets,
+  removeDir,
+  fetchSalts,
+  digestOf,
+  login,
+  loginWithToken,
+};

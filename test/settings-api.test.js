@@ -5,23 +5,22 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { after, before, describe, it } = require('node:test');
-const { removeDir, startServer, tempDir } = require('./helpers');
+const { fetchSalts, digestOf, login, removeDir, startServer, tempDir } = require('./helpers');
 
-/** 当前生效的访问令牌（启用后所有接口都要带上） */
-let accessKey = '';
+/**
+ * 当前生效的访问令牌。
+ *
+ * 令牌不再走 URL：启用后接口需要会话令牌或请求头里的令牌摘要，
+ * 这里保存摘要，调用接口时放进请求头。
+ */
+let accessDigest = '';
 
 /** 调用 JSON 接口，可选带上会话令牌 */
 async function call(base, path_, init = {}) {
   const headers = { 'Content-Type': 'application/json', ...(init.headers || {}) };
-  const url = accessKey ? path_ + (path_.indexOf('?') >= 0 ? '&' : '?') + 'key=' + encodeURIComponent(accessKey) : path_;
-  const resp = await fetch(`${base}/localsend/api${url}`, { ...init, headers });
+  if (accessDigest && !headers['X-Localsend-Key']) headers['X-Localsend-Key'] = accessDigest;
+  const resp = await fetch(`${base}/localsend/api${path_}`, { ...init, headers });
   return { status: resp.status, json: await resp.json() };
-}
-
-/** 登录并返回会话令牌 */
-async function login(base, password) {
-  const { json } = await call(base, '/login', { method: 'POST', body: JSON.stringify({ password }) });
-  return json.code === 0 ? json.data.token : '';
 }
 
 /** 取设置列表 */
@@ -111,38 +110,54 @@ describe('LocalSend 运行时设置', () => {
     });
     assert.equal(status, 200);
 
-    // 令牌生效后，所有接口都必须带上它
-    accessKey = 'new-token';
+    // 令牌生效后，接口需要会话令牌或请求头里的令牌摘要
     const list = await fetch(`${base}/localsend/api/list`);
     assert.equal(list.status, 401);
-    const withKey = await fetch(`${base}/localsend/api/list?key=new-token`);
-    assert.equal(withKey.status, 200);
+    // 口令登录的会话不受令牌变更影响
+    const withSession = await fetch(`${base}/localsend/api/list`, { headers: { 'X-Localsend-Session': token } });
+    assert.equal(withSession.status, 200);
+    // 令牌摘要放在请求头里同样可以访问
+    const salts = await fetchSalts(base);
+    accessDigest = digestOf(salts, 'token', 'new-token');
+    const withDigest = await fetch(`${base}/localsend/api/list`, { headers: { 'X-Localsend-Key': accessDigest } });
+    assert.equal(withDigest.status, 200);
   });
 
   it('修改口令需要验证当前口令', async () => {
     const token = await login(base, 'admin-pwd');
+    const salts = await fetchSalts(base);
     const bad = await call(base, '/settings', {
       method: 'POST',
       headers: { 'X-Localsend-Session': token },
-      body: JSON.stringify({ changes: { password: 'new-pwd' }, currentPassword: 'wrong' }),
+      body: JSON.stringify({
+        changes: { password: 'new-pwd' },
+        currentPasswordDigest: digestOf(salts, 'password', 'wrong'),
+      }),
     });
     assert.equal(bad.status, 403);
     assert.match(bad.json.msg, /口令/);
   });
 
   it('修改口令后旧会话失效、当前会话保留', async () => {
+    const salts = await fetchSalts(base);
     const oldToken = await login(base, 'admin-pwd');
     const otherToken = await login(base, 'admin-pwd');
     const { status } = await call(base, '/settings', {
       method: 'POST',
       headers: { 'X-Localsend-Session': oldToken },
-      body: JSON.stringify({ changes: { password: 'new-pwd' }, currentPassword: 'admin-pwd' }),
+      body: JSON.stringify({
+        changes: { password: 'new-pwd' },
+        currentPasswordDigest: digestOf(salts, 'password', 'admin-pwd'),
+      }),
     });
     assert.equal(status, 200);
 
-    // 其它会话被踢下线
-    const other = await getSettings(base, otherToken);
-    assert.equal(other.status, 403);
+    // 其它会话被踢下线。
+    // 这时访问令牌已经启用，服务端会明确区分「会话失效」与「权限不足」：
+    // 客户端据此提示重新登录，而不是继续以为自己还有权限
+    const other = await call(base, '/settings', { headers: { 'X-Localsend-Session': otherToken } });
+    assert.equal(other.status, 401);
+    assert.equal(other.json.needLogin, true);
     // 当前会话仍然有效
     const self = await getSettings(base, oldToken);
     assert.equal(self.status, 200);

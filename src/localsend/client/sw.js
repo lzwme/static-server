@@ -20,6 +20,7 @@ const CACHE_NAME = 'localsend-shell-v2';
 const SHELL_FILES = [
   './',
   './app.js',
+  './crypto.js',
   './style.css',
   './vendor/qr-code-styling.js',
   './manifest.webmanifest',
@@ -27,9 +28,6 @@ const SHELL_FILES = [
   './icons/icon-192.png',
   './icons/icon-512.png',
 ];
-
-/** 注册时可能带了访问令牌，安装后启动地址会丢失，这里记住以便补回 */
-const KEY = new URL(self.location.href).searchParams.get('key') || '';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -91,11 +89,6 @@ async function networkFirst(req) {
 /** 页面导航：网络优先，失败回退缓存 */
 async function handleNavigate(req) {
   const url = new URL(req.url);
-  // 以应用方式启动时地址栏没有令牌，补回后再加载
-  if (KEY && !url.searchParams.get('key')) {
-    url.searchParams.set('key', KEY);
-    return Response.redirect(url.toString(), 302);
-  }
   try {
     const fresh = await fetch(req);
     if (fresh && fresh.ok) {

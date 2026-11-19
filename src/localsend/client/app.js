@@ -2,23 +2,54 @@
   'use strict';
   var API = '/localsend/api';
   var $ = function (id) { return document.getElementById(id); };
-  // 访问令牌（服务端配置 token 时，访问地址需带 ?key=xxx）
-  var KEY = new URLSearchParams(location.search).get('key') || '';
-  function withKey(url) {
-    if (!KEY) return url;
-    return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'key=' + encodeURIComponent(KEY);
+  /**
+   * 会话令牌：口令登录或用访问令牌换取后，由服务端签发。
+   *
+   * 它只放在请求头里，不进 URL；只有下载链接、SSE、媒体预览这类
+   * 无法带自定义请求头的场景，才用 ?session= 带上
+   * （会话可撤销、会过期，与站点级访问令牌不是一回事）。
+   */
+  function withSession(url) {
+    if (!sessionToken) return url;
+    return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'session=' + encodeURIComponent(sessionToken);
   }
   // ---------------------------------------------------------------------------
   // 身份与会话
   //
-  // 服务端配置了口令时，危险操作（删除、整理、撤销分享）需要管理员身份，
-  // 上传与分享需要访客以上身份。会话令牌存在 localStorage，由服务端内存维护，
-  // 服务重启后失效，需要重新登录。
+  // 服务端配置了口令时，危险操作（删除、整理、撤销分享）需要管理员身份；
+  // 上传与分享需要访客以上身份，但没有配置访客口令时任何人都可以上传下载。
+  // 口令与访问令牌都不以明文提交：客户端用服务端公开的盐值派生出摘要，
+  // 服务端只比对摘要（见 crypto.js 与服务端的 secret.ts）。
+  // 会话令牌存在 localStorage，由服务端内存维护，服务重启后失效，需要重新登录。
   // ---------------------------------------------------------------------------
   var SESSION_STORAGE_KEY = 'localsend.session';
+  var TOKEN_STORAGE_KEY = 'localsend.token';
+  /** 登录方式：password（口令）/ token（访问令牌）。会话失效时据此提示正确的重新认证入口 */
+  var AUTH_METHOD_STORAGE_KEY = 'localsend.authMethod';
   var sessionToken = '';
+  // 用户输入的访问令牌：只留在浏览器里，用于向服务端换取会话
+  var accessToken = '';
+  /** 令牌自动校验进行中：避免多个 401 同时触发重复校验 */
+  var tokenExchangePending = false;
+  /** 本次页面生命周期内是否已经自动试过保存的令牌 */
+  var tokenAutoTried = false;
+  /**
+   * 认证失效：接口返回 401 之后置位。
+   *
+   * 未授权不是普通错误，它意味着后面的每个请求都会失败。
+   * 置位之后所有请求在本地就被拦下，不再发往服务端，
+   * 从根上杜绝「继续请求 → 继续 401 → 打满频率限制」的死循环。
+   * 重新认证成功、拿到新会话后自动解除。
+   */
+  var authBlocked = false;
+  /** 上次探测事件流连接状态的时间戳（毫秒），用来限制探测频率 */
+  var sseProbeAt = 0;
+  /** 本次登录使用的凭据类型 */
+  var authMethod = '';
   try {
     sessionToken = localStorage.getItem(SESSION_STORAGE_KEY) || '';
+    accessToken = localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+    authMethod = localStorage.getItem(AUTH_METHOD_STORAGE_KEY) || '';
   } catch (e) {
     // localStorage 不可用时忽略
   }
@@ -31,34 +62,119 @@
   }
   /** 是否可以写入（上传、粘贴、创建分享等） */
   function canWrite() {
-    return sessionInfo.role !== 'guest';
+    if (sessionInfo.role !== 'guest') return true;
+    // 未登录（只读）身份能否上传，取决于服务端是否配置了访客口令：
+    // 没有访客口令时允许任何人上传下载；配置了则必须先输入口令登录
+    return !sessionInfo.hasVisitor;
   }
   /**
-   * 统一的接口请求：自动带上访问令牌与会话令牌。
-   * 权限不足（403）时弹出登录框，避免用户不知道该做什么。
+   * 带会话头的底层请求：只负责把会话令牌放进请求头，不进 URL。
+   * 不做任何认证失败处理，由调用方决定怎么处理。
    */
-  function apiFetch(url, init) {
+  function sessionFetch(url, init) {
     var opts = init || {};
     var headers = opts.headers || {};
     if (sessionToken) headers['X-Localsend-Session'] = sessionToken;
     opts.headers = headers;
-    return fetch(withKey(url), opts).then(function (r) {
+    return fetch(url, opts);
+  }
+
+  /** 构造认证失败错误：统一流程已经处理过，调用方只需要终止当前流水线 */
+  function authError(msg) {
+    var err = new Error(msg || '需要重新认证');
+    err.authFailed = true;
+    return err;
+  }
+
+  /** 清掉本地会话（会话失效或退出登录时用） */
+  function clearSession() {
+    sessionToken = '';
+    try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (e) { /* 忽略存储失败 */ }
+  }
+
+  /** 记录本次使用的凭据类型：会话失效时据此提示正确的重新认证入口 */
+  function setAuthMethod(method) {
+    authMethod = method || '';
+    try {
+      if (authMethod) localStorage.setItem(AUTH_METHOD_STORAGE_KEY, authMethod);
+      else localStorage.removeItem(AUTH_METHOD_STORAGE_KEY);
+    } catch (e) { /* 忽略存储失败 */ }
+  }
+
+  /**
+   * 认证失效的统一处理。
+   *
+   * 未授权不是普通错误：它意味着后面的每个请求都会失败。
+   * 所以这里把整条流水线停掉——清掉死会话、断开事件流、停掉后台定时器、
+   * 置上短路开关——再弹出对应的重新认证入口，绝不自动重试。
+   *
+   * 弹哪个框取决于客户端是怎么进来的：
+   *  - 用口令登录的：口令变了或会话过期了，要重新输口令
+   *  - 用访问令牌进来的：令牌变了或会话过期了，要重新输令牌
+   */
+  function handleAuthFailure(json) {
+    var needToken = !!(json && json.needToken);
+    var wasPasswordUser = authMethod === 'password' || sessionInfo.role === 'admin' || sessionInfo.role === 'visitor';
+    var first = !authBlocked;
+    // 短路：后续请求在本地就被拦下，不再发往服务端
+    authBlocked = true;
+    // 死会话不能再带着走
+    clearSession();
+    // 事件流会自动重连，不断开就是持续的无效请求
+    closeEvents();
+    // 后台定时器同理：监听目录每 3 秒发一次请求
+    var watching = !!watchHandle;
+    stopWatchDir();
+    // 身份回到未登录，界面要如实反映，不能继续显示旧角色
+    sessionInfo.role = sessionInfo.open ? 'open' : 'guest';
+    applyRole();
+    if (watching) toast('会话已失效，目录监听已停止');
+    // 已经在重新认证流程里了，不再重复弹窗
+    if (!first) return;
+    var msg = (json && json.msg) || '';
+    if (!needToken && wasPasswordUser) {
+      openLoginModal(msg || '会话已失效，请重新登录');
+    } else {
+      // 会话失效时，之前保存的令牌再自动试一次；
+      // 试过了还不行才让用户手输，避免明明令牌没变却要重新敲一遍
+      tokenAutoTried = false;
+      openTokenModal(msg || '需要访问令牌', needToken ? '需要访问令牌' : '会话已失效，请重新验证');
+    }
+  }
+
+  /**
+   * 统一的接口请求：自动带上会话令牌（放在请求头里，不进 URL）。
+   *
+   * 401（未授权）是异常状态，不是普通响应：
+   * 走统一处理链（清会话、断事件流、停后台定时器、提示重新认证）之后
+   * 直接抛错终止本次流水线，绝不让它继续往下跑。
+   * 权限不足（403）时弹出登录框；其它 403（如禁止上传的类型）不打扰用户。
+   */
+  function apiFetch(url, init) {
+    // 认证失效后不再发请求：继续发只会全部 401，把频率限制打满
+    if (authBlocked) return Promise.reject(authError('需要重新认证'));
+    return sessionFetch(url, init).then(function (r) {
+      if (r.status === 401) {
+        return r
+          .clone()
+          .json()
+          .catch(function () { return null; })
+          .then(function (json) {
+            handleAuthFailure(json);
+            throw authError((json && json.msg) || '需要重新认证');
+          });
+      }
       // 权限不足时引导登录；其它 403（如禁止上传的类型）不打扰用户
       if (r.status === 403) {
         r.clone()
           .json()
           .then(function (json) {
-            if (json && json.needAuth) openLoginModal(json.msg);
-          })
-          .catch(function () {});
-      }
-      // 访问令牌被改或缺失：提示用户用新链接访问（登录接口的 401 不在此提示）
-      if (r.status === 401) {
-        r.clone()
-          .json()
-          .then(function (json) {
-            if (json && json.msg && String(json.msg).indexOf('访问令牌') >= 0) {
-              toast('访问令牌无效或已变更，请使用新的链接访问', 'err');
+            if (json && json.needAuth) {
+              // 服务端认为身份不够，说明当前身份已经变了：界面要跟着变，
+              // 不能继续显示旧角色，免得用户一直点着注定失败的按钮
+              sessionInfo.role = 'guest';
+              applyRole();
+              openLoginModal(json.msg);
             }
           })
           .catch(function () {});
@@ -84,12 +200,14 @@
 
     // 身份徽章：让人一眼看出当前能做什么
     var badge = $('roleBadge');
-    badge.textContent = sessionInfo.open ? '开放模式' : roleName(role);
+    // 未登录时能否上传取决于是否配置了访客口令，徽章要如实反映
+    var guestWrite = role === 'guest' && write;
+    badge.textContent = sessionInfo.open ? '开放模式' : guestWrite ? '未登录·可上传' : roleName(role);
     if (sessionInfo.open) {
       badge.className = 'text-[11px] px-2 py-1 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-300';
     } else if (role === 'admin') {
       badge.className = 'text-[11px] px-2 py-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300';
-    } else if (role === 'visitor') {
+    } else if (role === 'visitor' || guestWrite) {
       badge.className = 'text-[11px] px-2 py-1 rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-300';
     } else {
       badge.className = 'text-[11px] px-2 py-1 rounded-lg border border-slate-700 bg-slate-800/70 text-slate-400';
@@ -111,21 +229,86 @@
     }
   }
 
-  /** 拉取当前身份 */
+  /**
+   * 拉取当前身份。
+   *
+   * 返回 false 表示需要访问令牌（此时服务端返回 401），
+   * 后续的数据加载与事件订阅都要等令牌验证通过再做。
+   */
   function refreshSession() {
-    return apiFetch(API + '/session')
-      .then(function (r) { return r.json(); })
+    // 这里用底层请求而不是 apiFetch：身份探测本身要能穿过「认证失效」的短路，
+    // 否则就再也不知道服务端那边到底怎么了。
+    return sessionFetch(API + '/session')
+      .then(function (r) {
+        if (r.status === 401) {
+          // 会话失效：走统一处理（清会话、断事件流、停后台定时器、提示重新认证）
+          return r
+            .json()
+            .catch(function () { return null; })
+            .then(function (json) {
+              handleAuthFailure(json);
+              return null;
+            });
+        }
+        return r.json();
+      })
       .then(function (json) {
-        if (json.code !== 0) return;
+        if (!json) return false;
+        if (json.code !== 0) return true;
+        var prevRole = sessionInfo.role;
         sessionInfo = json.data || sessionInfo;
-        // 会话已失效（超时或服务重启）时清掉本地令牌，避免一直带着无效凭证
-        if (sessionInfo.role === 'guest' && sessionToken) {
-          sessionToken = '';
-          try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (e) { /* 忽略存储失败 */ }
+        // 会话已失效（超时、口令变更、服务重启）时清掉本地令牌，避免一直带着无效凭证。
+        // 以服务端给出的 sessionValid 为准：用访问令牌换来的会话角色也是 guest，
+        // 靠角色判断会把刚换到的会话误清掉。
+        if (sessionInfo.sessionValid === false && sessionToken) {
+          clearSession();
+          // 之前是口令登录的：明确提示重新登录，别让界面继续假装已登录
+          if (prevRole === 'admin' || prevRole === 'visitor') {
+            openLoginModal('会话已失效，请重新登录');
+          }
         }
         applyRole();
+        return true;
       })
-      .catch(function () { /* 拿不到身份信息时按默认权限显示 */ });
+      .catch(function () {
+        /* 拿不到身份信息时按默认权限显示 */
+        return !authBlocked;
+      });
+  }
+
+  /** 取回各密钥的公开盐值（客户端据此派生出摘要） */
+  function fetchSalts() {
+    return fetch(API + '/auth/salt')
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) throw new Error(json.msg || '获取盐值失败');
+        return json.data || {};
+      });
+  }
+
+  /** 用公开盐值把口令/令牌派生成摘要 */
+  function digestOf(salts, kind, secret) {
+    var list = (salts && salts.secrets) || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].kind === kind) {
+        return window.LocalsendCrypto.pbkdf2Hex(secret, list[i].salt, list[i].iterations);
+      }
+    }
+    return '';
+  }
+
+  /**
+   * 保存服务端签发的会话令牌。
+   *
+   * method 记录这次是用口令还是访问令牌进来的：会话失效时据此提示正确的重新认证入口。
+   */
+  function applySession(data, method) {
+    sessionToken = String((data && data.token) || '');
+    try { localStorage.setItem(SESSION_STORAGE_KEY, sessionToken); } catch (e) { /* 忽略存储失败 */ }
+    if (data && data.role) sessionInfo.role = data.role;
+    if (method) setAuthMethod(method);
+    // 拿到有效会话：解除短路，恢复正常请求
+    authBlocked = false;
   }
 
   /** 打开登录弹窗 */
@@ -146,7 +329,12 @@
     $('loginPassword').value = '';
   }
 
-  /** 提交登录 */
+  /**
+   * 提交登录。
+   *
+   * 口令在浏览器里用服务端公开的盐值派生成摘要后再提交，
+   * 明文口令与摘要都不会出现在 URL 里。
+   */
   function submitLogin() {
     var input = $('loginPassword');
     var pwd = input.value;
@@ -157,34 +345,151 @@
       return;
     }
     $('loginOk').disabled = true;
-    apiFetch(API + '/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: pwd }),
-    })
-      .then(function (r) { return r.json(); })
-      .then(function (json) {
-        if (json.code !== 0) {
-          err.textContent = json.msg || '口令不正确';
+    fetchSalts()
+      .then(function (salts) {
+        var digests = {};
+        // 管理员口令与访客口令用不同的盐值，两种都算一遍，服务端自己判断是哪一个
+        var admin = digestOf(salts, 'password', pwd);
+        var visitor = digestOf(salts, 'visitorPassword', pwd);
+        if (admin) digests.password = admin;
+        if (visitor) digests.visitorPassword = visitor;
+        if (!admin && !visitor) throw new Error('服务端未启用口令登录');
+        return fetch(API + '/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ digests: digests }),
+        });
+      })
+      .then(function (r) {
+        return r.json().then(function (json) {
+          return { status: r.status, json: json };
+        });
+      })
+      .then(function (out) {
+        if (out.status !== 200 || out.json.code !== 0) {
+          err.textContent = out.json.msg || '口令不正确';
           err.classList.remove('hidden');
           input.select();
           return;
         }
-        sessionToken = json.data.token;
-        try { localStorage.setItem(SESSION_STORAGE_KEY, sessionToken); } catch (e) { /* 忽略存储失败 */ }
+        applySession(out.json.data, 'password');
         input.value = '';
         err.classList.add('hidden');
         $('loginModal').classList.add('hidden');
-        sessionInfo.role = json.data.role;
-        toast('已登录：' + roleName(json.data.role), 'ok');
+        toast('已登录：' + roleName(out.json.data.role), 'ok');
         // 重新拉取身份并刷新列表，按新角色显示或隐藏操作入口
-        refreshSession().then(function () { loadFiles(); });
+        refreshSession().then(function (ok) { if (ok) startApp(); });
       })
-      .catch(function () {
-        err.textContent = '登录失败，请重试';
+      .catch(function (e) {
+        err.textContent = (e && e.message) || '登录失败，请重试';
         err.classList.remove('hidden');
       })
       .then(function () { $('loginOk').disabled = false; });
+  }
+
+  /**
+   * 打开访问令牌输入弹窗。
+   *
+   * title 用于区分「从没用过令牌」与「会话失效要重新换」两种情况，
+   * 免得用户以为要重新输一遍明明没变过的令牌。
+   */
+  function openTokenModal(msg, title) {
+    var show = function (text) {
+      // 弹窗已经开着时不再重复处理，免得把用户正在输入的内容冲掉
+      if (!$('tokenModal').classList.contains('hidden')) return;
+      var err = $('tokenError');
+      if (text) {
+        err.textContent = text;
+        err.classList.remove('hidden');
+      }
+      $('tokenTitle').textContent = title || '需要访问令牌';
+      $('tokenModal').classList.remove('hidden');
+      setTimeout(function () { $('tokenPassword').focus(); }, 60);
+    };
+    // 之前输入过的令牌：自动换一次会话（本次页面生命周期内只试一次），失败才问用户
+    if (accessToken && !tokenAutoTried && !tokenExchangePending) {
+      tokenAutoTried = true;
+      tokenExchangePending = true;
+      exchangeToken(accessToken)
+        .then(function () {
+          refreshSession().then(function (ok) { if (ok) startApp(); });
+        })
+        .catch(function (e) {
+          show((e && e.message) || msg || '请输入访问令牌');
+        })
+        .then(function () { tokenExchangePending = false; });
+      return;
+    }
+    show(msg);
+  }
+
+  /** 关闭访问令牌输入弹窗 */
+  function closeTokenModal() {
+    $('tokenModal').classList.add('hidden');
+    $('tokenError').classList.add('hidden');
+    $('tokenPassword').value = '';
+  }
+
+  /**
+   * 用访问令牌换取会话。
+   *
+   * 令牌只在浏览器里派生成摘要，明文不会离开浏览器；
+   * 服务端签发的会话令牌才是之后所有请求里出现的东西，
+   * 原始令牌也不再出现在任何 URL 里。
+   */
+  function exchangeToken(value) {
+    return fetchSalts()
+      .then(function (salts) {
+        var digest = digestOf(salts, 'token', value);
+        if (!digest) throw new Error('服务端未启用访问令牌');
+        return fetch(API + '/auth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ digest: digest }),
+        });
+      })
+      .then(function (r) {
+        return r.json().then(function (json) {
+          return { status: r.status, json: json };
+        });
+      })
+      .then(function (out) {
+        if (out.status !== 200 || out.json.code !== 0) throw new Error(out.json.msg || '访问令牌不正确');
+        applySession(out.json.data, 'token');
+        accessToken = value;
+        try { localStorage.setItem(TOKEN_STORAGE_KEY, value); } catch (e) { /* 忽略存储失败 */ }
+        return out.json.data;
+      });
+  }
+
+  /** 提交访问令牌 */
+  function submitToken() {
+    var input = $('tokenPassword');
+    var value = input.value.trim();
+    var err = $('tokenError');
+    if (!value) {
+      err.textContent = '请输入访问令牌';
+      err.classList.remove('hidden');
+      return;
+    }
+    $('tokenOk').disabled = true;
+    tokenAutoTried = true;
+    tokenExchangePending = true;
+    exchangeToken(value)
+      .then(function () {
+        closeTokenModal();
+        toast('访问令牌已验证', 'ok');
+        refreshSession().then(function (ok) { if (ok) startApp(); });
+      })
+      .catch(function (e) {
+        err.textContent = (e && e.message) || '访问令牌不正确';
+        err.classList.remove('hidden');
+        input.select();
+      })
+      .then(function () {
+        tokenExchangePending = false;
+        $('tokenOk').disabled = false;
+      });
   }
 
   /** 退出登录 */
@@ -192,15 +497,20 @@
     apiFetch(API + '/logout', { method: 'POST' })
       .catch(function () { /* 退出失败也清理本地会话 */ })
       .then(function () {
-        sessionToken = '';
-        try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (e) { /* 忽略存储失败 */ }
+        clearSession();
+        setAuthMethod('');
+        // 退出后回到访客身份，重新按访客口径加载
+        authBlocked = false;
         sessionInfo.role = sessionInfo.open ? 'open' : 'guest';
+        // 断开事件流：会话没了，重连只会不断拿到 401
+        closeEvents();
         applyRole();
         loadFiles();
         toast('已退出登录', 'ok');
       });
   }
-  var pageUrl = location.origin + location.pathname + (KEY ? '?key=' + encodeURIComponent(KEY) : '');
+  // 访问地址里不再带令牌：访问令牌由用户在页面上输入，避免被网关日志留存
+  var pageUrl = location.origin + location.pathname;
   // 排序偏好记忆：记住用户上次选择的排序方式与升降序
   var sortType = 'time';
   var sortOrder = 'desc';
@@ -297,6 +607,9 @@
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
   function toast(msg, type, action) {
+    // 认证失效期间不弹错误提示：原因统一由重新认证弹窗说明，
+    // 否则同一个原因会在各个接口的失败回调里反复刷屏
+    if (authBlocked && type === 'err') return;
     var el = $('toast');
     el.textContent = '';
     el.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] rounded-xl px-4 sm:px-5 py-2.5 sm:py-3 text-xs sm:text-sm shadow-xl border border-white/10 flex items-center gap-3 ' + (type === 'ok' ? 'bg-emerald-600/90' : type === 'err' ? 'bg-red-600/90' : 'bg-slate-800/90');
@@ -965,8 +1278,12 @@
   /** 订阅服务端文件变更事件 */
   function connectEvents() {
     if (!window.EventSource) return;
+    // 认证失效期间不再订阅：连上去只会不断拿到 401
+    if (authBlocked) return;
+    // 已有连接时先断开，避免重复订阅
+    closeEvents();
     try {
-      eventSource = new EventSource(withKey(API + '/events'));
+      eventSource = new EventSource(withSession(API + '/events'));
     } catch (e) {
       return;
     }
@@ -979,7 +1296,41 @@
       }
       handleIncoming((payload && payload.names) || []);
     });
-    // 连接断开时浏览器会自动按 retry 重连，这里无需额外处理
+    /**
+     * 连接断开时浏览器会按 retry 间隔自动重连。
+     *
+     * 那是服务端管不到的一条请求流：如果会话已经失效，
+     * 每次重连都只会再拿一个 401，很快就把频率限制打满，
+     * 连正常请求都被牵连。所以这里先探测一次会话状态，
+     * 确认失效就断开并进入统一的重新认证流程。
+     */
+    eventSource.onerror = function () {
+      if (authBlocked) {
+        closeEvents();
+        return;
+      }
+      var now = Date.now();
+      // 限制探测频率：断线可能连续触发多次
+      if (now - sseProbeAt < 5000) return;
+      sseProbeAt = now;
+      refreshSession();
+    };
+  }
+
+  /**
+   * 断开事件流。
+   *
+   * 会话失效时必须主动断开：EventSource 会自动重连，
+   * 未授权的重连很快就会把接口频率限制打满，连正常请求都会被牵连。
+   */
+  function closeEvents() {
+    if (!eventSource) return;
+    try {
+      eventSource.close();
+    } catch (e) {
+      // 忽略关闭异常
+    }
+    eventSource = null;
   }
 
   /** 刷新目录筛选下拉选项（数据来自服务端，前端不再需要全量列表） */
@@ -1487,7 +1838,7 @@
       return;
     }
     var xhr = new XMLHttpRequest();
-    xhr.open('POST', withKey(API + '/upload'));
+    xhr.open('POST', withSession(API + '/upload'));
     // 上传需要访客以上权限，会话令牌随请求头带上
     if (sessionToken) xhr.setRequestHeader('X-Localsend-Session', sessionToken);
     var lastLoaded = 0;
@@ -1585,7 +1936,7 @@
   // 原生下载：由浏览器直接下载 URL，不经过 XHR，内存占用恒定
   function nativeDownload(name) {
     var a = document.createElement('a');
-    a.href = withKey(API + '/download/' + encodeURIComponent(name));
+    a.href = withSession(API + '/download/' + encodeURIComponent(name));
     a.download = name;
     a.style.display = 'none';
     document.body.appendChild(a);
@@ -1595,7 +1946,7 @@
 
   // 小文件下载：XHR + blob，可显示进度
   function xhrDownload(name, onDone) {
-    var url = withKey(API + '/download/' + encodeURIComponent(name));
+    var url = withSession(API + '/download/' + encodeURIComponent(name));
     var xhr = new XMLHttpRequest();
     xhr.open('GET', url);
     xhr.responseType = 'blob';
@@ -1656,7 +2007,7 @@
    * 因此内存占用恒定；同时可以实时反馈进度与速度。
    */
   function streamToDisk(name, size) {
-    var url = withKey(API + '/download/' + encodeURIComponent(name));
+    var url = withSession(API + '/download/' + encodeURIComponent(name));
     var progress = null;
     try {
       progress = showProgress('正在下载 ' + name);
@@ -1772,7 +2123,7 @@
    * 不会因为文件多或文件大而失败。
    */
   function downloadZip(names) {
-    var url = withKey(API + '/zip?names=' + encodeURIComponent(names.join(',')));
+    var url = withSession(API + '/zip?names=' + encodeURIComponent(names.join(',')));
     var stamp = new Date();
     var p = function (x) { return String(x).padStart(2, '0'); };
     var fname = 'localsend-' + stamp.getFullYear() + p(stamp.getMonth() + 1) + p(stamp.getDate()) + '-' + p(stamp.getHours()) + p(stamp.getMinutes()) + '.zip';
@@ -1803,7 +2154,7 @@
    */
   function previewFile(name) {
     var ext = (name.split('.').pop() || '').toLowerCase();
-    var url = withKey(API + '/preview/' + encodeURIComponent(name));
+    var url = withSession(API + '/preview/' + encodeURIComponent(name));
     var size = fileSizeOf(name);
 
     // 超出内联预览上限时直接新窗口打开，避免浏览器卡死
@@ -1840,13 +2191,32 @@
           $('previewBody').innerHTML = '';
           var pre = $('previewContent');
           pre.classList.remove('hidden');
-          pre.textContent = t.length > TEXT_PREVIEW_LIMIT ? t.slice(0, TEXT_PREVIEW_LIMIT) + '\n\n... (内容过长已截断，共 ' + t.length + ' 字符)' : t;
+          var truncated = t.length > TEXT_PREVIEW_LIMIT;
+          pre.textContent = truncated ? t.slice(0, TEXT_PREVIEW_LIMIT) + '\n\n... (内容过长已截断，共 ' + t.length + ' 字符)' : t;
+          // 复制的是完整内容，截断只影响展示
+          setPreviewCopy(t);
         })
         .catch(function () { toast('预览失败', 'err'); });
       return;
     }
     // 其它类型：尝试在弹窗内联，不行就新窗口打开
     window.open(url, '_blank');
+  }
+
+  /** 当前预览的文本内容，供「复制内容」按钮使用 */
+  var previewText = '';
+
+  /**
+   * 设置预览弹窗里的复制按钮。
+   *
+   * 只有文本预览才有内容可复制，图片 / PDF / 音视频预览时传入空串隐藏按钮。
+   */
+  function setPreviewCopy(text) {
+    previewText = text || '';
+    var btn = $('previewCopy');
+    if (!btn) return;
+    if (previewText) btn.classList.remove('hidden');
+    else btn.classList.add('hidden');
   }
 
   /** 以媒体方式展示预览内容 */
@@ -1856,13 +2226,14 @@
     $('previewOpen').href = url;
     $('previewContent').classList.add('hidden');
     $('previewContent').textContent = '';
+    setPreviewCopy('');
     var body = $('previewBody');
     body.classList.remove('hidden');
     body.innerHTML = html;
   }
 
   function copyLink(name) {
-    copyText(withKey(location.origin + API + '/download/' + encodeURIComponent(name)));
+    copyText(withSession(location.origin + API + '/download/' + encodeURIComponent(name)));
   }
   // 生成分享链接（带时效，无需访问令牌即可下载）
   function shareFiles(names, label) {
@@ -2112,7 +2483,7 @@
       toast('当前浏览器不支持系统分享，已复制下载链接', 'ok');
       return;
     }
-    var url = withKey(location.origin + API + '/download/' + encodeURIComponent(name));
+    var url = withSession(location.origin + API + '/download/' + encodeURIComponent(name));
     // 能拿到文件本体时一并分享文件本身（移动端体验最好）
     fetch(url)
       .then(function (r) {
@@ -2636,33 +3007,53 @@
       return;
     }
     var payload = { changes: changes };
+    // 当前管理员口令：明文只留在浏览器里，提交的是它的摘要
+    var currentPwd = $('settingsCurrentPwd').value;
     if ('password' in changes || 'visitorPassword' in changes) {
-      var pwd = $('settingsCurrentPwd').value;
-      if (!pwd) {
+      if (!currentPwd) {
         toast('修改口令需要填写当前管理员口令', 'err');
         return;
       }
-      payload.currentPassword = pwd;
     }
-    apiFetch(API + '/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
+    // 先把要提交的摘要算出来（需要服务端公开的盐值）
+    var prepare = function () {
+      if (!('password' in changes) && !('visitorPassword' in changes)) return Promise.resolve();
+      return fetchSalts()
+        .then(function (salts) {
+          payload.currentPasswordDigest = digestOf(salts, 'password', currentPwd);
+          if (!payload.currentPasswordDigest) throw new Error('服务端未启用管理员口令');
+        });
+    };
+    prepare()
+      .then(function () {
+        return apiFetch(API + '/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      })
       .then(function (r) { return r.json(); })
       .then(function (json) {
         if (json.code !== 0) { toast(json.msg || '保存失败', 'err'); return; }
         toast('设置已保存并生效', 'ok');
         $('settingsCurrentPwd').value = '';
-        // 令牌变了：更新本地的令牌与访问链接，旧的扫码链接随即失效
+        // 令牌变了：用新令牌换一个会话，否则旧会话会失效
         if ('token' in changes) {
-          KEY = String(changes.token || '');
-          pageUrl = location.origin + location.pathname + (KEY ? '?key=' + encodeURIComponent(KEY) : '');
-          toast(KEY ? '访问令牌已更新，旧链接已失效，请分享新的链接' : '访问令牌已停用，访问不再需要密钥', 'ok');
+          var newToken = String(changes.token || '');
+          accessToken = newToken;
+          try { localStorage.setItem(TOKEN_STORAGE_KEY, newToken); } catch (e) { /* 忽略存储失败 */ }
+          toast(newToken ? '访问令牌已更新，旧令牌随即失效' : '访问令牌已停用，访问不再需要令牌', 'ok');
+          if (newToken) {
+            exchangeToken(newToken).catch(function () {
+              openTokenModal('请重新输入访问令牌');
+            });
+          }
         }
         openSettings();
       })
-      .catch(function () { toast('保存失败', 'err'); });
+      .catch(function (e) {
+        toast((e && e.message) || '保存失败', 'err');
+      });
   }
 
   /** 恢复某一项的默认值 */
@@ -2684,9 +3075,27 @@
   $('logoutBtn').addEventListener('click', logout);
   $('loginCancel').addEventListener('click', closeLoginModal);
   $('loginOk').addEventListener('click', submitLogin);
+  $('loginUseToken').addEventListener('click', function () {
+    // 服务端可能只配了令牌，也可能只配了口令：让用户自己切换，
+    // 免得卡在「该输哪一个」上
+    closeLoginModal();
+    openTokenModal('');
+  });
   $('loginModal').addEventListener('click', function (e) { if (e.target === $('loginModal')) closeLoginModal(); });
   $('loginPassword').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') submitLogin();
+  });
+
+  // 访问令牌输入
+  $('tokenCancel').addEventListener('click', closeTokenModal);
+  $('tokenOk').addEventListener('click', submitToken);
+  $('tokenUseLogin').addEventListener('click', function () {
+    closeTokenModal();
+    openLoginModal('');
+  });
+  $('tokenModal').addEventListener('click', function (e) { if (e.target === $('tokenModal')) closeTokenModal(); });
+  $('tokenPassword').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') submitToken();
   });
 
   // 设置面板
@@ -2722,9 +3131,12 @@
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
     var dt = e.clipboardData || e.dataTransfer;
     if (!dt) return;
-    // 只读身份不能保存内容，先提示再放行默认粘贴
+    // 需要访客口令时不能保存内容，先提示并引导登录
     if (!canWrite()) {
-      toast('当前为只读访问，无法保存粘贴的内容', 'err');
+      toast('需要访客口令才能保存粘贴的内容', 'err', {
+        label: '登录',
+        onClick: function () { openLoginModal('请输入访客口令后即可上传与分享'); },
+      });
       return;
     }
     // 图片（截图）优先
@@ -2755,9 +3167,15 @@
     body.classList.add('hidden');
     $('previewContent').textContent = '';
     $('previewContent').classList.add('hidden');
+    setPreviewCopy('');
   }
   $('closePreview').addEventListener('click', closePreviewModal);
   $('previewModal').addEventListener('click', function (e) { if (e.target === $('previewModal')) closePreviewModal(); });
+  // 复制预览内容：文本预览时才可用
+  $('previewCopy').addEventListener('click', function () {
+    if (!previewText) return;
+    copyText(previewText);
+  });
   // 回收站
   $('trashBtn').addEventListener('click', openTrash);
   $('closeTrash').addEventListener('click', function () { $('trashModal').classList.add('hidden'); });
@@ -2792,7 +3210,7 @@
     else if (act === 'share') shareFiles([name]);
     else if (act === 'syshare') systemShare(name);
     else if (act === 'copy') copyLink(name);
-    else if (act === 'qr') showQr(withKey(location.origin + API + '/download/' + encodeURIComponent(name)), '扫码直连下载：' + name);
+    else if (act === 'qr') showQr(withSession(location.origin + API + '/download/' + encodeURIComponent(name)), '扫码直连下载：' + name);
     else if (act === 'rename') openRenameDialog(name);
     else if (act === 'move') openMoveDialog([name]);
     else if (act === 'delete') deleteFile(name);
@@ -2910,22 +3328,40 @@
   $('orderBtn').textContent = sortOrder === 'desc' ? '↓ 降序' : '↑ 升序';
   $('pageSizeSelect').value = String(PAGE_SIZE);
 
-  // 先取身份再渲染列表，保证按钮的显示与当前权限一致
-  refreshSession().then(function () {
+  /**
+   * 身份确认之后，开始加载数据并订阅事件。
+   *
+   * 需要访问令牌时先不加载：否则一堆接口都会拿到 401，
+   * 事件流也会自动重连，很快就把频率限制打满。
+   */
+  function startApp() {
+    // 认证还没恢复时不要拉数据、不要订阅事件
+    if (authBlocked) return;
     loadFiles();
     applyRole();
+    loadFacets();
+    refreshTrashCount();
+    refreshShareCount();
+    updateInboxBadge();
+    connectEvents();
+  }
+
+  // 认证失败由统一流程处理（提示重新认证 + 停止一切请求），
+  // 这里把未被接住的认证失败吞掉，避免控制台反复报红
+  window.addEventListener('unhandledrejection', function (e) {
+    if (e.reason && e.reason.authFailed) e.preventDefault();
   });
-  loadFacets();
-  refreshTrashCount();
-  refreshShareCount();
-  updateInboxBadge();
-  connectEvents();
+
+  // 先取身份再渲染列表，保证按钮的显示与当前权限一致
+  refreshSession().then(function (ok) {
+    if (ok) startApp();
+  });
 
   // 注册 Service Worker，提供离线可用的页面外壳
   // 仅在安全上下文可用（https 或 localhost）；局域网 http 下浏览器会拒绝注册
   if ('serviceWorker' in navigator && window.isSecureContext) {
     window.addEventListener('load', function () {
-      var swUrl = '/localsend/sw.js' + (KEY ? '?key=' + encodeURIComponent(KEY) : '');
+      var swUrl = '/localsend/sw.js';
       navigator.serviceWorker.register(swUrl).catch(function () {
         // 注册失败不影响正常使用，静默忽略
       });

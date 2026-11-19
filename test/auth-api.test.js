@@ -5,19 +5,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { after, before, describe, it } = require('node:test');
-const { listFiles, removeDir, startServer, tempDir, upload } = require('./helpers');
+const { fetchSalts, digestOf, listFiles, login, loginWithToken, removeDir, startServer, tempDir, upload } = require('./helpers');
 
 /** 调用一个 JSON 接口，可选带上会话令牌 */
 async function call(base, path_, init = {}) {
   const headers = { 'Content-Type': 'application/json', ...(init.headers || {}) };
   const resp = await fetch(`${base}/localsend/api${path_}`, { ...init, headers });
   return { status: resp.status, json: await resp.json() };
-}
-
-/** 登录并返回会话令牌 */
-async function login(base, password) {
-  const { json } = await call(base, '/login', { method: 'POST', body: JSON.stringify({ password }) });
-  return json.code === 0 ? json.data.token : '';
 }
 
 describe('LocalSend 权限分级', () => {
@@ -90,9 +84,21 @@ describe('LocalSend 权限分级', () => {
   });
 
   it('口令错误无法登录', async () => {
-    const { status, json } = await call(base, '/login', { method: 'POST', body: JSON.stringify({ password: 'wrong' }) });
+    const salts = await fetchSalts(base);
+    const { status, json } = await call(base, '/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ digests: { password: digestOf(salts, 'password', 'wrong') } }),
+    });
     assert.equal(status, 401);
     assert.equal(json.code, 1);
+  });
+
+  it('明文口令不再被接受', async () => {
+    const { status } = await call(base, '/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ digests: { password: 'admin-pwd' } }),
+    });
+    assert.equal(status, 401);
   });
 
   it('访客登录后可以上传但不能删除', async () => {
@@ -159,6 +165,45 @@ describe('LocalSend 权限分级', () => {
   });
 });
 
+describe('LocalSend 仅配置管理员口令', () => {
+  let dir;
+  let server;
+  let base;
+
+  before(async () => {
+    dir = tempDir('sserver-adminonly-');
+    server = await startServer(dir, { password: 'admin-pwd' });
+    base = server.base;
+  });
+
+  after(async () => {
+    if (server) await server.close();
+    removeDir(dir);
+  });
+
+  it('未配置访客口令时未登录也可以上传下载', async () => {
+    const { json } = await call(base, '/session');
+    assert.equal(json.data.role, 'guest');
+    assert.equal(json.data.hasVisitor, false);
+
+    const up = await upload(base, 'anyone.txt', 'a');
+    assert.equal(up.status, 200);
+    assert.equal(fs.existsSync(path.join(dir, 'anyone.txt')), true);
+
+    const down = await fetch(`${base}/localsend/api/download/anyone.txt`);
+    assert.equal(down.status, 200);
+  });
+
+  it('未登录仍然不能删除与整理', async () => {
+    const del = await fetch(`${base}/localsend/api/delete/anyone.txt`, { method: 'DELETE' });
+    assert.equal(del.status, 403);
+    assert.equal(fs.existsSync(path.join(dir, 'anyone.txt')), true);
+
+    const rename = await call(base, '/rename', { method: 'POST', body: JSON.stringify({ from: 'anyone.txt', to: 'other.txt' }) });
+    assert.equal(rename.status, 403);
+  });
+});
+
 describe('LocalSend 开放模式', () => {
   let dir;
   let server;
@@ -202,11 +247,37 @@ describe('LocalSend 访问令牌保护', () => {
     removeDir(dir);
   });
 
-  it('所有接口都需要访问令牌', async () => {
+  it('未换取会话时接口一律拒绝', async () => {
     const noKey = await fetch(`${base}/localsend/api/list`);
     assert.equal(noKey.status, 401);
+    const json = await noKey.json();
+    assert.equal(json.needToken, true);
+  });
+
+  it('页面与静态资源不需要令牌即可加载', async () => {
+    const page = await fetch(`${base}/localsend`);
+    assert.equal(page.status, 200);
+    const script = await fetch(`${base}/localsend/crypto.js`);
+    assert.equal(script.status, 200);
+  });
+
+  it('地址栏里带 key 的老链接不再被接受', async () => {
     const withKey = await fetch(`${base}/localsend/api/list?key=secret-key`);
-    assert.equal(withKey.status, 200);
+    assert.equal(withKey.status, 401);
+  });
+
+  it('用令牌摘要换取会话后接口正常', async () => {
+    const session = await loginWithToken(base, 'secret-key');
+    assert.ok(session);
+    const list = await fetch(`${base}/localsend/api/list`, { headers: { 'X-Localsend-Session': session } });
+    assert.equal(list.status, 200);
+  });
+
+  it('令牌摘要也可以直接放在请求头里', async () => {
+    const salts = await fetchSalts(base);
+    const digest = digestOf(salts, 'token', 'secret-key');
+    const list = await fetch(`${base}/localsend/api/list`, { headers: { 'X-Localsend-Key': digest } });
+    assert.equal(list.status, 200);
   });
 
   it('分享接口不能绕过令牌创建链接', async () => {
@@ -225,9 +296,11 @@ describe('LocalSend 访问令牌保护', () => {
     assert.equal(fs.existsSync(path.join(dir, '文本-e2fc064c.txt')), false);
   });
 
-  it('带上令牌后接口正常', async () => {
-    const { status, json } = await call(base, '/share?key=secret-key', {
+  it('换取会话后分享接口正常', async () => {
+    const session = await loginWithToken(base, 'secret-key');
+    const { status, json } = await call(base, '/share', {
       method: 'POST',
+      headers: { 'X-Localsend-Session': session },
       body: JSON.stringify({ names: ['secret.txt'] }),
     });
     assert.equal(status, 200);

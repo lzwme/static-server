@@ -35,12 +35,22 @@ import { isInternalDirName, resolveInDir, safeRelPath } from './path';
 export interface WebDavOptions {
   /** 存储目录 */
   dir: string;
-  /** 访问令牌。设置后需使用 Basic Auth（用户名为 localsend）。传入函数表示运行时取值 */
-  token?: string | (() => string);
-  /** 管理员口令。设置后删除/整理类操作需要在 Basic Auth 中提供此口令。传入函数表示运行时取值 */
-  password?: string | (() => string);
-  /** 访客口令。设置后可用于上传，但不能删除与整理。传入函数表示运行时取值 */
-  visitorPassword?: string | (() => string);
+  /** 是否配置了访问令牌。传入函数表示运行时取值 */
+  hasToken?: () => boolean;
+  /**
+   * 校验访问令牌（明文或摘要均可）。
+   * WebDAV 客户端只能用 Basic Auth 传明文，服务端用盐值现场算摘要再比对。
+   */
+  verifyToken?: (presented: string) => boolean;
+  /**
+   * 校验明文口令，返回匹配到的角色（admin / visitor / open / guest），不匹配返回 null。
+   * 传入函数表示运行时取值
+   */
+  verifyPlain?: (plaintext: string) => Role | null;
+  /** 是否未配置任何口令（开放模式）。传入函数表示运行时取值 */
+  isOpen?: () => boolean;
+  /** 是否配置了访客口令（决定未认证客户端能否上传）。传入函数表示运行时取值 */
+  hasVisitor?: () => boolean;
   /** 禁止上传的扩展名（含点，如 .php）。传入函数表示运行时取值 */
   blockExtensions?: string[] | (() => string[]);
   /** 存储总容量上限（字节），0 表示不限制。传入函数表示运行时取值 */
@@ -173,6 +183,8 @@ function basicCredentials(req: Request): { user: string; pass: string } | null {
 /**
  * 校验 Basic Auth。
  * 未配置令牌时直接放行；配置后要求用户名为 localsend、密码为令牌。
+ *
+ * @deprecated 令牌已改为摘要校验，WebDAV 处理函数内部直接调用 verifyToken
  */
 export function checkDavAuth(req: Request, token: string): boolean {
   if (!token) return true;
@@ -287,9 +299,14 @@ export function createWebDavHandler(options: WebDavOptions) {
   const { dir } = options;
   const basePath = (options.basePath || '/localsend/dav').replace(/\/+$/, '');
   /** 运行时读取当前生效的访问令牌 */
-  const getToken = (): string => {
-    const value = typeof options.token === 'function' ? options.token() : options.token;
-    return value || '';
+  const getHasToken = (): boolean => {
+    if (typeof options.hasToken === 'function') return !!options.hasToken();
+    return !!options.hasToken;
+  };
+  /** 校验访问令牌（明文或摘要均可） */
+  const verifyToken = (presented: string): boolean => {
+    if (typeof options.verifyToken !== 'function') return false;
+    return options.verifyToken(presented);
   };
   /** 运行时读取当前生效的单文件大小上限 */
   const getMaxSize = (): number => {
@@ -306,11 +323,15 @@ export function createWebDavHandler(options: WebDavOptions) {
     const list = typeof options.blockExtensions === 'function' ? options.blockExtensions() : options.blockExtensions;
     return new Set((list || []).map((e) => (e.startsWith('.') ? e : `.${e}`).toLowerCase()));
   };
-  /** 运行时读取管理员口令 / 访客口令，用于 WebDAV 的身份分级 */
-  const readPassword = (value?: string | (() => string)): string => {
-    const resolved = typeof value === 'function' ? value() : value;
-    return resolved || '';
+  /** 运行时读取口令校验方式（Basic Auth 只能传明文，服务端用盐值现场算摘要再比对） */
+  const readRole = (plaintext: string): Role | null => {
+    if (typeof options.verifyPlain !== 'function') return null;
+    return options.verifyPlain(plaintext) ?? null;
   };
+  /** 是否处于开放模式（未配置任何口令） */
+  const isOpen = (): boolean => (typeof options.isOpen === 'function' ? !!options.isOpen() : true);
+  /** 是否配置了访客口令 */
+  const hasVisitor = (): boolean => (typeof options.hasVisitor === 'function' ? !!options.hasVisitor() : false);
 
   /** 从请求中解析相对路径（逐段解码，避免 %2F 造成的歧义） */
   const relOf = (req: Request): { rel: string; invalid: boolean } => {
@@ -334,11 +355,12 @@ export function createWebDavHandler(options: WebDavOptions) {
   };
 
   return async function handleWebDav(req: Request, res: Response): Promise<void> {
-    const token = getToken();
     const basic = basicCredentials(req);
     const queryKey = String(req.query?.key ?? '');
-    // 站点令牌是进门的第一道锁；Basic 口令同样算已通过的凭据（便于 WebDAV 客户端直接带管理员口令）
-    const tokenOk = !token || (queryKey && safeEqual(queryKey, token)) || (basic?.user === 'localsend' && safeEqual(basic.pass, token));
+    // Basic Auth 里带的就是口令明文（客户端只能这样传）
+    const pass = basic?.user === 'localsend' ? basic.pass : '';
+    // 站点令牌是进门的第一道锁：查询串里的令牌或 Basic 口令里的令牌都算通过
+    const tokenOk = !getHasToken() || (queryKey && verifyToken(queryKey)) || (basic?.user === 'localsend' && verifyToken(pass));
     if (!tokenOk) {
       res.setHeader('WWW-Authenticate', 'Basic realm="LocalSend"');
       res.status(401).send('需要访问令牌');
@@ -347,22 +369,17 @@ export function createWebDavHandler(options: WebDavOptions) {
 
     const method = (req.method || 'GET').toUpperCase();
 
-    // 身份分级：口令未配置时保持开放模式；配置后用 Basic Auth 的密码区分管理员/访客，
+    // 身份分级：口令未配置时保持开放模式；配置后用 Basic Auth 的口令区分管理员/访客，
     // 防止 WebDAV 的删除与整理绕过 JSON 接口上的 requireAdmin 校验。
-    const password = readPassword(options.password);
-    const visitorPassword = readPassword(options.visitorPassword);
-    let role: Role = 'open';
-    if (password || visitorPassword) {
-      const pass = basic?.user === 'localsend' ? basic.pass : '';
-      if (password && safeEqual(pass, password)) role = 'admin';
-      else if (visitorPassword && safeEqual(pass, visitorPassword)) role = 'visitor';
-      else role = 'guest';
-    }
+    // 服务端用盐值现场算摘要再比对，明文口令不会离开客户端。
+    const matchedRole = readRole(pass);
+    const role: Role = isOpen() ? 'open' : matchedRole || 'guest';
     const needsWrite = method === 'PUT';
     const needsManage = method === 'DELETE' || method === 'MKCOL' || method === 'COPY' || method === 'MOVE';
-    if ((needsWrite && !canWrite(role)) || (needsManage && !canManage(role))) {
+    // 没有配置访客口令时，未认证的客户端也能上传（与网页端保持一致）
+    if ((needsWrite && !canWrite(role, hasVisitor())) || (needsManage && !canManage(role))) {
       res.setHeader('WWW-Authenticate', 'Basic realm="LocalSend"');
-      res.status(403).send('该操作需要管理员口令');
+      res.status(403).send(needsManage ? '该操作需要管理员口令' : '该操作需要访客口令');
       return;
     }
 
