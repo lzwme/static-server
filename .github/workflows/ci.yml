@@ -40,12 +40,13 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ steps.pnpm-store.outputs.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          # 不使用 lockfile：切换 npm 源时锁文件可能携带私有 registry 地址，故不纳入版本管理
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('package.json') }}
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
 
       - name: 安装依赖
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        run: pnpm install --no-frozen-lockfile --lockfile=false --ignore-scripts
 
       - name: 代码检查
         run: pnpm run lint
