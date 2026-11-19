@@ -93,27 +93,33 @@ export function createListCache(options: ListCacheOptions): ListCache {
     }
   }
 
-  /** 应用一次增量变更 */
-  function applyChange(rel: string, type: 'add' | 'change' | 'remove'): void {
+  /**
+   * 应用一次增量变更。
+   *
+   * 返回是否真的对应一个文件条目：目录本身的创建/改名也会触发 watcher，
+   * 这类事件不该被当成「收到新文件」推送出去。
+   */
+  function applyChange(rel: string, type: 'add' | 'change' | 'remove'): boolean {
     const filter = options.filter;
     if (type === 'remove') {
       const idx = findIndex(rel);
       if (idx >= 0) entries.splice(idx, 1);
-      return;
+      return false;
     }
     // 内部目录（如分片暂存区）不进入缓存
-    if (rel.split('/').some((p) => isInternalDirName(p))) return;
-    if (filter && !filter(rel)) return;
+    if (rel.split('/').some((p) => isInternalDirName(p))) return false;
+    if (filter && !filter(rel)) return false;
     const meta = statOf(rel);
     if (!meta) {
-      // 文件可能已被删除
+      // 文件可能已被删除，或者是目录事件
       const idx = findIndex(rel);
       if (idx >= 0) entries.splice(idx, 1);
-      return;
+      return false;
     }
     const idx = findIndex(rel);
     if (idx >= 0) entries[idx] = meta;
     else entries.push(meta);
+    return true;
   }
 
   /** 合并并应用待处理的变更 */
@@ -122,9 +128,9 @@ export function createListCache(options: ListCacheOptions): ListCache {
     if (!pending.size) return;
     const changed: string[] = [];
     for (const [rel, info] of pending) {
-      applyChange(rel, info.type);
-      // 删除不作为「收到新文件」通知
-      if (info.type !== 'remove') changed.push(rel);
+      const applied = applyChange(rel, info.type);
+      // 删除不作为「收到新文件」通知；目录事件也不推送
+      if (info.type !== 'remove' && applied) changed.push(rel);
     }
     pending.clear();
     if (changed.length) options.onChange?.(changed);
@@ -165,32 +171,57 @@ export function createListCache(options: ListCacheOptions): ListCache {
     }
   }
 
-  /** 计算相对存储目录的路径 */
+  /** 计算相对存储目录的路径（统一用 `/` 分隔） */
   function relativeToDir(target: string, name: string): string {
     if (target === dir) return name;
-    const prefix = target.slice(dir.length).replace(/^[\\/]+/, '');
+    const prefix = target
+      .slice(dir.length)
+      .replace(/^[\\/]+/, '')
+      .split(/[\\/]+/)
+      .filter(Boolean)
+      .join('/');
     return prefix ? `${prefix}/${name}` : name;
   }
 
-  /** 建立对存储目录及其子目录的监听 */
+  /** 监听上限：目录过多时只覆盖较浅的层级，更深的靠 TTL 兜底 */
+  const MAX_WATCHERS = 64;
+  /** 监听的最大层级（根目录算第 0 层） */
+  const MAX_WATCH_DEPTH = 3;
+
+  /**
+   * 建立对存储目录及其子目录的监听。
+   *
+   * 以前只监听根目录与一级子目录，深层子目录里的新增文件要等 5 分钟 TTL
+   * 过期才会被推送。这里按深度（默认 3 层）与数量（默认 64 个）递归监听，
+   * 既覆盖常见的「归档/2026/项目」这类结构，也不会让 watcher 数量失控。
+   */
   function setupWatch(): void {
     if (!watchEnabled) return;
     // 监听顶层目录
     watchDir(dir);
-    // 监听一级子目录（更深层级由 TTL 校准兜底，避免 watcher 数量失控）
-    try {
-      for (const name of readdirSync(dir)) {
+    const walk = (current: string, depth: number) => {
+      if (depth >= MAX_WATCH_DEPTH || watchers.length >= MAX_WATCHERS) return;
+      let names: string[];
+      try {
+        names = readdirSync(current);
+      } catch {
+        return;
+      }
+      for (const name of names) {
         if (isInternalDirName(name)) continue;
-        const full = join(dir, name);
+        if (watchers.length >= MAX_WATCHERS) return;
+        const full = join(current, name);
         try {
-          if (statSync(full).isDirectory()) watchDir(full);
+          if (!statSync(full).isDirectory()) continue;
         } catch {
           // 忽略读取失败的条目
+          continue;
         }
+        watchDir(full);
+        walk(full, depth + 1);
       }
-    } catch {
-      // 目录读取失败，忽略
-    }
+    };
+    walk(dir, 0);
   }
 
   return {

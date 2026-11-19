@@ -1335,8 +1335,30 @@
     }
   }
 
-  /** 处理服务端推送的文件变更 */
+  /** 待合并的变更事件（一轮上传会推送很多次，合并后再刷新） */
+  var incomingBuffer = [];
+  var incomingTimer = null;
+  var INCOMING_DEBOUNCE = 350;
+
+  /**
+   * 处理服务端推送的文件变更。
+   *
+   * 一次上传几十个文件时，服务端会按批推送多条事件；
+   * 如果每条都立刻刷新列表 + 筛选 + 用量，浏览器会连着发几十轮请求。
+   * 这里做 350ms 合并：同一窗口内的变更只触发一次刷新与一次提示。
+   */
   function handleIncoming(names) {
+    if (names && names.length) incomingBuffer = incomingBuffer.concat(names);
+    if (incomingTimer) return;
+    incomingTimer = setTimeout(flushIncoming, INCOMING_DEBOUNCE);
+  }
+
+  /** 合并窗口结束：去重、刷新、提示 */
+  function flushIncoming() {
+    incomingTimer = null;
+    var names = incomingBuffer;
+    incomingBuffer = [];
+    if (!names.length) return;
     var now = Date.now();
     // 自己刚做的整理操作（重命名、移动等）也会触发变更推送，
     // 这段时间内不再提示「收到新文件」，避免把操作结果当成别人的文件
@@ -1344,14 +1366,16 @@
       refreshAll();
       return;
     }
-    // 过滤掉本机刚上传的文件，避免自己提示自己
-    var fresh = names.filter(function (n) {
+    // 去重后过滤掉本机刚上传的文件，避免自己提示自己
+    var fresh = [];
+    names.forEach(function (n) {
+      if (fresh.indexOf(n) >= 0) return;
       var at = ownUploads[n];
       if (at && now - at < 10000) {
         delete ownUploads[n];
-        return false;
+        return;
       }
-      return true;
+      fresh.push(n);
     });
     refreshAll();
     if (!fresh.length) return;
