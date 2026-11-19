@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { describe, it } = require('node:test');
 
-const { resolveAssetsDir } = require('../dist/lib/localsend');
+const { resolveAssetsDir } = require('../dist/localsend');
 
 /** 造一个包含 style.css 的产物目录 */
 function makeAssetsDir(root, rel) {
@@ -54,15 +54,15 @@ describe('前端构建产物目录探测', () => {
   it('产物在运行目录的更上层时逐级向上找到', () => {
     const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'sserver-assets-'));
     const expected = makeAssetsDir(root, 'assets/localsend');
-    // 开发态：模块位于 src/lib/localsend，产物在仓库根 assets
-    assert.equal(resolveAssetsDir(path.join(root, 'src/lib/localsend')), expected);
+    // 开发态：模块位于 src/localsend，产物在仓库根 assets
+    assert.equal(resolveAssetsDir(path.join(root, 'src/localsend')), expected);
   });
 
   it('就近优先：内层产物优先于外层', () => {
     const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'sserver-assets-'));
     makeAssetsDir(root, 'assets/localsend');
     const inner = makeAssetsDir(root, 'dist/assets/localsend');
-    assert.equal(resolveAssetsDir(path.join(root, 'dist/lib/localsend')), inner);
+    assert.equal(resolveAssetsDir(path.join(root, 'dist/localsend')), inner);
   });
 
   it('实际仓库中产物与源码分处两棵树（需先执行 npm run build:assets）', () => {
@@ -73,13 +73,16 @@ describe('前端构建产物目录探测', () => {
     assert.equal(fs.existsSync(path.join(repoRoot, 'assets/localsend/style.css')), true);
   });
 
-  it('仓库结构：localsend 服务端代码与前端页面资源分开维护', () => {
+  it('仓库结构：localsend 作为独立功能目录维护', () => {
     const repoRoot = path.resolve(__dirname, '..');
-    // 服务端代码集中在 src/lib/localsend
-    assert.equal(fs.existsSync(path.join(repoRoot, 'src/lib/localsend/index.ts')), true);
-    // 前端页面资源独立放在 src/client
-    assert.equal(fs.existsSync(path.join(repoRoot, 'src/client/index.html')), true);
-    // src/lib 顶层只保留通用库
-    assert.equal(fs.existsSync(path.join(repoRoot, 'src/lib/localsend.ts')), false);
+    // 服务端代码集中在 src/localsend
+    assert.equal(fs.existsSync(path.join(repoRoot, 'src/localsend/index.ts')), true);
+    // 前端页面资源放在 src/localsend/client
+    assert.equal(fs.existsSync(path.join(repoRoot, 'src/localsend/client/index.html')), true);
+    // 样式构建入口放在 src/localsend/styles，不随页面资源发布
+    assert.equal(fs.existsSync(path.join(repoRoot, 'src/localsend/styles/input.css')), true);
+    assert.equal(fs.existsSync(path.join(repoRoot, 'src/localsend/client/input.css')), false);
+    // src/lib 只保留通用库
+    assert.equal(fs.existsSync(path.join(repoRoot, 'src/lib/localsend')), false);
   });
 });

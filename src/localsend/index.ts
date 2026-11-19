@@ -19,9 +19,9 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 import { color } from 'console-log-colors';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
-import { getConfig, type LocalSendConfig } from '../../config';
-import { logger } from '../../get-logger';
-import { getIp } from '../utils';
+import { getConfig, type LocalSendConfig } from '../config';
+import { logger } from '../get-logger';
+import { getIp } from '../lib/utils';
 import { canManage, canWrite, createAuth } from './auth';
 import { createListCache } from './cache';
 import { createChunkStore, MAX_CHUNK_SIZE } from './chunk';
@@ -41,14 +41,14 @@ import { createZipChunks, type ZipEntry } from './zip';
 /**
  * 前端页面单文件路径（相对本模块所在目录）。
  *
- * 本模块位于 src/lib/localsend（dev）或 dist/lib/localsend（prod），
- * 页面资源位于同级的 client 目录（src/client / dist/client），
+ * 本模块位于 src/localsend（dev）或 dist/localsend（prod），
+ * 页面资源位于同级的 client 目录（src/localsend/client / dist/localsend/client），
  * 两处结构一致，因此用同一条相对路径即可，无需区分开发态与运行态。
  */
-const PAGE_REL_PATH = '../../client/index.html';
+const PAGE_REL_PATH = './client/index.html';
 
 /** 页面静态资源目录（相对本模块），与 PAGE_REL_PATH 同级 */
-const PAGE_DIR = '../../client';
+const PAGE_DIR = './client';
 
 /**
  * 前端构建产物目录（相对本模块所在目录）。
@@ -64,8 +64,8 @@ const ASSETS_REL = 'assets/localsend';
  *
  * 产物位置随运行方式而变，因此不写死单一路径，而是从运行目录逐级向上找
  * 第一个包含 style.css 的 assets 目录：
- *  - 运行态（__dirname 为 dist/lib/localsend）：dist 内自带 assets，发布包开箱即用
- *  - 开发态（__dirname 为 src/lib/localsend）：产物在仓库根 assets/，需上溯三级
+ *  - 运行态（__dirname 为 dist/localsend）：dist 内自带 assets，发布包开箱即用
+ *  - 开发态（__dirname 为 src/localsend）：产物在仓库根 assets/，需上溯两级
  *
  * 逐级探测的好处是：产物目录无论放在运行目录、其上级还是仓库根，
  * 都能被找到；同时不会误取到更外层的无关 assets 目录。

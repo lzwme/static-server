@@ -17,7 +17,7 @@
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { logger } from '../../get-logger';
+import { logger } from '../get-logger';
 
 export interface ChunkMeta {
   /** 上传任务 ID */

@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { describe, it } = require('node:test');
 
-const { createSettingsStore, normalizeSetting, resolveSettingsFile } = require('../dist/lib/localsend/settings');
+const { createSettingsStore, normalizeSetting, resolveSettingsFile } = require('../dist/localsend/settings');
 
 /** 临时目录 */
 function tmpDir() {

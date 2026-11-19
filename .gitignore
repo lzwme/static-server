@@ -1,7 +1,7 @@
 # OS X
 .DS_Store*
 Icon?
-!src/client/icons/
+!src/localsend/client/icons/
 ._*
 .idea
 

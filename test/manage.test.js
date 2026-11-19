@@ -7,7 +7,7 @@ const path = require('node:path');
 const { after, before, describe, it } = require('node:test');
 const { removeDir, tempDir } = require('./helpers');
 
-const { applyRenameRule, batchRename, moveFiles, parseRenameRule, renameFile, uniqueName } = require('../dist/lib/localsend/manage');
+const { applyRenameRule, batchRename, moveFiles, parseRenameRule, renameFile, uniqueName } = require('../dist/localsend/manage');
 
 describe('parseRenameRule', () => {
   it('缺省使用前缀模式', () => {

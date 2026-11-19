@@ -7,7 +7,7 @@ const path = require('node:path');
 const { after, before, describe, it } = require('node:test');
 const { removeDir, tempDir } = require('./helpers');
 
-const { INTERNAL_DIR_NAMES, isInternalDirName, listDirs, listFiles, resolveInDir, safeRelPath } = require('../dist/lib/localsend/path');
+const { INTERNAL_DIR_NAMES, isInternalDirName, listDirs, listFiles, resolveInDir, safeRelPath } = require('../dist/localsend/path');
 
 describe('safeRelPath', () => {
   it('保留普通文件名与子目录', () => {

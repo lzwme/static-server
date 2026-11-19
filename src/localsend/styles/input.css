@@ -1,0 +1,12 @@
+/*
+ * LocalSend 页面样式入口（Tailwind CSS v4）
+ *
+ * 本文件是构建输入，只在构建期使用，不属于运行时资源，因此放在 src/styles/ 下，
+ * 不会随前端页面资源一起进入发布包。
+ *
+ * 构建：pnpm run build:css  →  生成 assets/localsend/style.css（不入库，由构建生成）
+ */
+@import 'tailwindcss' source(none);
+/* 只扫描前端页面与脚本，避免把 dist/、临时目录等无关内容编进产物 */
+@source '../client/index.html';
+@source '../client/app.js';

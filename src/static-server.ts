@@ -13,8 +13,8 @@ import { color } from 'console-log-colors';
 import express, { type Express } from 'express';
 import { getConfig, type SSConfig } from './config';
 import { logger } from './get-logger';
-import { initLocalsend } from './lib/localsend';
 import { getIp } from './lib/utils.js';
+import { initLocalsend } from './localsend';
 import { proxyByExpress } from './proxy/express-proxy';
 import { phpProxy } from './proxy/php-proxy';
 

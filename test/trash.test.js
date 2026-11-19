@@ -7,7 +7,7 @@ const path = require('node:path');
 const { after, before, beforeEach, describe, it } = require('node:test');
 const { removeDir, tempDir } = require('./helpers');
 
-const { createTrash } = require('../dist/lib/localsend/trash');
+const { createTrash } = require('../dist/localsend/trash');
 
 describe('回收站', () => {
   let dir;

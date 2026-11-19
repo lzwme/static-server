@@ -7,7 +7,7 @@ const path = require('node:path');
 const { after, before, describe, it } = require('node:test');
 const { removeDir, tempDir } = require('./helpers');
 
-const { createChunkStore } = require('../dist/lib/localsend/chunk');
+const { createChunkStore } = require('../dist/localsend/chunk');
 
 describe('分片暂存区', () => {
   let dir;

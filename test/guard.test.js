@@ -3,7 +3,7 @@
  */
 const assert = require('node:assert/strict');
 const { describe, it } = require('node:test');
-const { createGuard } = require('../dist/lib/localsend/guard');
+const { createGuard } = require('../dist/localsend/guard');
 
 /** 构造一个最小化的请求对象 */
 function mockReq({ path = '/api/list', query = {}, headers = {} } = {}) {

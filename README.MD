@@ -487,22 +487,27 @@ npm link
 
 ### 目录结构与构建产物
 
-源码按「服务端代码 / 前端页面资源 / 构建产物」分三处存放，彼此不混：
+`src/` 按「功能」划分目录，localsend 作为一个完整功能独立维护，其内部再分服务端代码、前端资源与样式入口：
 
 ```
-src/lib/localsend/       服务端代码：index.ts（主模块）+ auth / cache / chunk / path / query / zip 等子模块
+src/localsend/           localsend 功能目录
+  index.ts               服务端主模块（路由、静态资源挂载）
+  auth.ts cache.ts ...   服务端子模块（去掉冗余的 localsend- 前缀）
+  client/                前端页面资源：index.html / app.js / sw.js / manifest / icons/ ...（随包发布）
+  styles/input.css       Tailwind 样式入口，仅构建期使用，不随包发布
 src/lib/                 通用库：get-cert.ts / merge-config.ts / mkcert.ts / utils.ts
-src/client/              前端页面资源：index.html / app.js / input.css / sw.js / icons/ ...
 assets/localsend/        构建产物：style.css（由 input.css 编译）、vendor/qr-code-styling.js
-dist/                    发布物：lib/ + client/ + assets/（构建时从上述各处拷贝而来）
+dist/                    发布物：localsend/ + lib/ + assets/（构建时从上述各处拷贝而来）
 ```
 
 `assets/` 由构建脚本生成并已通过 `.gitignore` 排除，不纳入 git 管理。构建时先由 `pnpm build:css` 编译样式、`pnpm build:vendor` 拷贝 vendor 库，再由 `pnpm build` 统一拷贝到 `dist/`，顺序不可颠倒（`scripts/copy-assets.js` 会先清空目标目录）。产物由构建生成，`pnpm dev` 会自动先执行 `build:assets`，无需手动准备。
 
-`dist/` 的目录结构与 `src/` 保持镜像（`src/client` → `dist/client`），因此服务端用同一条相对路径就能在开发态与运行态下都定位到页面资源。构建产物则按运行时目录特征自动识别——从运行目录逐级向上找第一个包含 `style.css` 的 `assets` 目录：
+发布物只包含运行期真正需要的文件：`scripts/copy-assets.js` 只拷贝 `src/localsend/client` 与 `assets/`，服务端源码（`.ts`）与样式入口（`input.css`）都不会进入 `dist/`。
 
-- **运行态**（模块位于 `dist/lib/localsend/`）：命中 `dist/assets/localsend`，发布包自带全部前端资源，开箱即用
-- **开发态**（模块位于 `src/lib/localsend/`）：命中仓库根的 `assets/localsend`
+`dist/` 的目录结构与 `src/` 保持镜像（`src/localsend/client` → `dist/localsend/client`），因此服务端用同一条相对路径就能在开发态与运行态下都定位到页面资源。构建产物则按运行时目录特征自动识别——从运行目录逐级向上找第一个包含 `style.css` 的 `assets` 目录：
+
+- **运行态**（模块位于 `dist/localsend/`）：命中 `dist/assets/localsend`，发布包自带全部前端资源，开箱即用
+- **开发态**（模块位于 `src/localsend/`）：命中仓库根的 `assets/localsend`
 
 页面 URL 不受影响，仍是 `/localsend/style.css`。
 
