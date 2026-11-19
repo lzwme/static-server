@@ -5,8 +5,10 @@
  * 文件本身多为图片/视频/压缩包，压缩收益有限，因此使用 store 模式，
  * 既省 CPU 也便于流式输出。
  *
- * 结构：local file header → 文件数据 → data descriptor → ... → central directory → end of central directory
- * 由于 CRC 与长度在写完文件后才知道，这里使用 data descriptor（general purpose flag bit 3）。
+ * 结构：local file header → 文件数据 → ... → central directory → end of central directory
+ * CRC 与长度在写文件前就算出，因此不使用 data descriptor（general purpose flag bit 3）。
+ *
+ * 文件名统一以 UTF-8 编码并置 EFS 标志位（bit 11），中文名在各平台解压后不会乱码。
  */
 
 /** 生成 CRC32 查找表 */
@@ -49,6 +51,7 @@ export interface ZipEntry {
 
 interface CentralRecord {
   nameBuf: Buffer;
+  extraBuf: Buffer;
   crc: number;
   size: number;
   offset: number;
@@ -59,6 +62,52 @@ interface CentralRecord {
 const LOCAL_SIG = 0x04034b50;
 const CENTRAL_SIG = 0x02014b50;
 const END_SIG = 0x06054b50;
+
+/**
+ * 通用标志位 bit 11（EFS）：文件名与注释以 UTF-8 编码。
+ *
+ * 这是中文文件名不乱码的关键：不设置该位时，解压工具会按 CP437
+ * （或本地代码页）解释文件名里的字节，UTF-8 的中文就会显示成乱码。
+ * local file header 与 central directory 两处都要设置——
+ * 多数工具（含 Windows 资源管理器）读的是中央目录里的那一份。
+ */
+const FLAG_UTF8 = 0x0800;
+
+/** Unicode Path Extra Field 的 header id（Info-ZIP 扩展） */
+const EXTRA_UNICODE_PATH = 0x7075;
+
+/**
+ * 生成 Unicode Path Extra Field。
+ *
+ * 较老的解压工具（部分 7-Zip / WinRAR / 国产解压软件）不认 EFS 标志，
+ * 但会优先读取这个扩展里的 UTF-8 文件名，可以作为兜底避免中文乱码。
+ *
+ * 结构：header id(2) + data size(2) + version(1) + nameCRC32(4) + UTF-8 文件名
+ * 其中 nameCRC32 是对本地头/中央目录中实际存储的文件名字节计算的 CRC32，
+ * 用于让工具确认两者一致。
+ */
+function buildUnicodePathExtra(nameBuf: Buffer): Buffer {
+  const dataSize = 1 + 4 + nameBuf.length;
+  const extra = Buffer.alloc(4 + dataSize);
+  extra.writeUInt16LE(EXTRA_UNICODE_PATH, 0);
+  extra.writeUInt16LE(dataSize, 2);
+  extra.writeUInt8(1, 4); // version
+  extra.writeUInt32LE(crc32Update(0, nameBuf), 5);
+  nameBuf.copy(extra, 9);
+  return extra;
+}
+
+/**
+ * 生成条目名的扩展字段。
+ *
+ * 纯 ASCII 名不需要额外字段（任何工具都能正确解析），保持体积不变；
+ * 含非 ASCII 字符时补上 Unicode Path Extra Field。
+ */
+function buildNameExtra(nameBuf: Buffer): Buffer {
+  // eslint-disable-next-line no-control-regex
+  const isAscii = /^[\x20-\x7e]*$/.test(nameBuf.toString('latin1'));
+  return isAscii ? Buffer.alloc(0) : buildUnicodePathExtra(nameBuf);
+}
 
 /**
  * 生成 ZIP 内容的异步迭代器，可直接 pipe 到响应流。
@@ -89,12 +138,13 @@ export async function* createZipChunks(entries: ZipEntry[], readFile: (path: str
   for (const [index, entry] of entries.entries()) {
     const meta = metas[index];
     const nameBuf = Buffer.from(entry.name, 'utf8');
+    const extraBuf = buildNameExtra(nameBuf);
     const { time, date } = dosDateTime(entry.mtime);
 
     const local = Buffer.alloc(30);
     local.writeUInt32LE(LOCAL_SIG, 0);
     local.writeUInt16LE(20, 4); // version needed
-    local.writeUInt16LE(0, 6); // flags
+    local.writeUInt16LE(FLAG_UTF8, 6); // flags：文件名以 UTF-8 编码
     local.writeUInt16LE(0, 8); // method: store
     local.writeUInt16LE(time, 10);
     local.writeUInt16LE(date, 12);
@@ -102,10 +152,11 @@ export async function* createZipChunks(entries: ZipEntry[], readFile: (path: str
     local.writeUInt32LE(meta.size, 18); // compressed size
     local.writeUInt32LE(meta.size, 22); // uncompressed size
     local.writeUInt16LE(nameBuf.length, 26);
-    local.writeUInt16LE(0, 28); // extra length
+    local.writeUInt16LE(extraBuf.length, 28); // extra length
 
     yield local;
     yield nameBuf;
+    if (extraBuf.length) yield extraBuf;
 
     for await (const chunk of readFile(entry.path)) {
       yield chunk;
@@ -113,13 +164,14 @@ export async function* createZipChunks(entries: ZipEntry[], readFile: (path: str
 
     central.push({
       nameBuf,
+      extraBuf,
       crc: meta.crc,
       size: meta.size,
       offset,
       time,
       date,
     });
-    offset += local.length + nameBuf.length + meta.size;
+    offset += local.length + nameBuf.length + extraBuf.length + meta.size;
   }
 
   // central directory
@@ -129,7 +181,7 @@ export async function* createZipChunks(entries: ZipEntry[], readFile: (path: str
     header.writeUInt32LE(CENTRAL_SIG, 0);
     header.writeUInt16LE(20, 4); // version made by
     header.writeUInt16LE(20, 6); // version needed
-    header.writeUInt16LE(0x0008, 8); // flag
+    header.writeUInt16LE(FLAG_UTF8, 8); // flags：文件名以 UTF-8 编码
     header.writeUInt16LE(0, 10); // method
     header.writeUInt16LE(record.time, 12);
     header.writeUInt16LE(record.date, 14);
@@ -137,7 +189,7 @@ export async function* createZipChunks(entries: ZipEntry[], readFile: (path: str
     header.writeUInt32LE(record.size, 20); // compressed size
     header.writeUInt32LE(record.size, 24); // uncompressed size
     header.writeUInt16LE(record.nameBuf.length, 28);
-    header.writeUInt16LE(0, 30); // extra
+    header.writeUInt16LE(record.extraBuf.length, 30); // extra
     header.writeUInt16LE(0, 32); // comment
     header.writeUInt16LE(0, 34); // disk
     header.writeUInt16LE(0, 36); // internal attrs
@@ -145,7 +197,8 @@ export async function* createZipChunks(entries: ZipEntry[], readFile: (path: str
     header.writeUInt32LE(record.offset, 42);
     yield header;
     yield record.nameBuf;
-    offset += header.length + record.nameBuf.length;
+    if (record.extraBuf.length) yield record.extraBuf;
+    offset += header.length + record.nameBuf.length + record.extraBuf.length;
   }
 
   const cdSize = offset - cdStart;
