@@ -29,7 +29,7 @@ import { createCleaner } from './cleaner';
 import { createGuard } from './guard';
 import { batchRename, moveFiles, parseRenameRule, renameFile, uniqueName } from './manage';
 import { buildPasteName, contentHash, parsePaste, parseStrategy, timeStampTag } from './paste';
-import { resolveInDir, safeRelPath } from './path';
+import { isInternalDirName, resolveInDir, safeRelPath } from './path';
 import { collectDirs, collectExts, filterEntries, paginate, parseListQuery, ROOT_DIR, sortEntries } from './query';
 import { SECRET_ITERATIONS } from './secret';
 import { createSettingsStore, normalizeSetting, SETTING_DEFS, type SettingKey } from './settings';
@@ -190,19 +190,34 @@ class LocalsendError extends Error {
 }
 
 /**
- * 计算目录下所有文件的总大小（字节）。忽略读取失败的条目。
+ * 计算目录占用（字节，递归子目录）。忽略读取失败的条目。
+ *
+ * 内部目录（分片暂存、回收站）不计入：前者是临时数据，
+ * 后者由回收站单独统计，混在一起会让「已用空间」与文件列表对不上。
  */
-export function dirSize(target: string): number {
+export function dirSize(target: string, skipInternal = true): number {
   if (!existsSync(target)) return 0;
   let total = 0;
-  for (const name of readdirSync(target)) {
+  const walk = (current: string) => {
+    let names: string[];
     try {
-      const stat = statSync(join(target, name));
-      if (stat.isFile()) total += stat.size;
+      names = readdirSync(current);
     } catch {
-      // 文件可能刚好被删除，跳过
+      return;
     }
-  }
+    for (const name of names) {
+      if (skipInternal && isInternalDirName(name)) continue;
+      const full = join(current, name);
+      try {
+        const stat = statSync(full);
+        if (stat.isDirectory()) walk(full);
+        else if (stat.isFile()) total += stat.size;
+      } catch {
+        // 文件可能刚好被删除，跳过
+      }
+    }
+  };
+  walk(target);
   return total;
 }
 
@@ -912,7 +927,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     }
     // 总容量预检
     if (live.maxTotalSize) {
-      const used = dirSize(dir);
+      const used = usedBytes();
       if (used + parsed.buffer.length > live.maxTotalSize) {
         return void res.status(413).json({
           code: 1,
@@ -1066,6 +1081,17 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   // 启动即开始监听，保证没有列表请求时也能感知新文件
   listCache.startWatch();
 
+  /**
+   * 当前存储占用（字节，不含回收站与分片暂存）。
+   *
+   * 直接对列表缓存求和：缓存里本来就有全部文件的元信息，求和是内存操作。
+   * 而每次上传都递归扫盘，在几千个文件时会明显拖慢请求；
+   * 写操作结束后缓存会失效，下次访问自动重新校准。
+   */
+  function usedBytes(): number {
+    return listCache.list().reduce((sum, item) => sum + item.size, 0);
+  }
+
   // SSE 长连接：页面订阅后实时接收文件变更
   app.get('/localsend/api/events', (req: Request, res: Response) => openEventStream(req, res));
 
@@ -1100,6 +1126,28 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     const all = listCache.list();
     const { dirs, rootCount } = collectDirs(all);
     res.json({ code: 0, data: { dirs, rootCount, exts: collectExts(all), total: all.length } });
+  });
+
+  /**
+   * 存储用量。
+   *
+   * 有配额却看不到用量时，用户只有在撞上 413 才知道「满了」。
+   * 这里把已用、上限、文件数、回收站占用一起返回，页面画一条进度条即可。
+   */
+  app.get('/localsend/api/usage', (_req: Request, res: Response) => {
+    const entries = listCache.list();
+    const used = entries.reduce((sum, item) => sum + item.size, 0);
+    const trashEntries = trash.list();
+    res.json({
+      code: 0,
+      data: {
+        used,
+        limit: live.maxTotalSize,
+        files: entries.length,
+        trash: trashEntries.reduce((sum, item) => sum + (item.size || 0), 0),
+        trashCount: trashEntries.length,
+      },
+    });
   });
 
   // 多文件上传
@@ -1145,7 +1193,9 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     // 总容量预检：目录已用容量与本次请求体大小共同判断，超出配额直接拒绝
     (req: Request, res: Response, next) => {
       if (!live.maxTotalSize) return next();
-      const used = dirSize(dir);
+      const used = usedBytes();
+      // 记录写入前的占用，写入后复核时用它加上本次实际写入量
+      res.locals.usedBefore = used;
       if (used >= live.maxTotalSize) {
         res.status(413).json({
           code: 1,
@@ -1203,8 +1253,11 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
         }
       }
 
-      // 容量复核：写入后若超出总配额，撤销本次写入并提示
-      if (live.maxTotalSize && dirSize(dir) > live.maxTotalSize) {
+      // 容量复核：写入后若超出总配额，撤销本次写入并提示。
+      // 用「写入前占用 + 本次写入量」判断，避免缓存还没失效时读到旧值
+      const written = results.reduce((sum, item) => sum + item.size, 0);
+      const usedBefore = Number(res.locals.usedBefore) || 0;
+      if (live.maxTotalSize && usedBefore + written > live.maxTotalSize) {
         for (const r of results) {
           try {
             rmSync(join(dir, r.name));
@@ -1323,7 +1376,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
 
     // 合并前复核总配额
     if (live.maxTotalSize) {
-      const used = dirSize(dir);
+      const used = usedBytes();
       if (used + meta.size > live.maxTotalSize) {
         return void res.status(413).json({
           code: 1,

@@ -1513,10 +1513,42 @@
       });
   }
 
-  /** 文件变动后同时刷新列表与筛选选项 */
+  /** 拉取存储用量并刷新进度条 */
+  function loadUsage() {
+    return apiFetch(API + '/usage')
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.code !== 0) return;
+        var d = json.data || {};
+        var used = Number(d.used) || 0;
+        var limit = Number(d.limit) || 0;
+        var trash = Number(d.trash) || 0;
+        var bar = $('usageBar');
+        if (!bar) return;
+        bar.classList.remove('hidden');
+        $('usageText').textContent = limit
+          ? '已用 ' + fmtSize(used) + ' / ' + fmtSize(limit) + '（剩余 ' + fmtSize(Math.max(0, limit - used)) + '）'
+          : '已用 ' + fmtSize(used) + ' · 未设容量上限';
+        $('usageTrash').textContent = trash ? '回收站 ' + fmtSize(trash) : '';
+        var fill = $('usageFill');
+        if (!limit) {
+          fill.style.width = '0%';
+          return;
+        }
+        var pct = Math.min(100, Math.max(0, Math.round((used / limit) * 100)));
+        fill.style.width = pct + '%';
+        fill.className = 'h-full transition-all ' + (pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-amber-500' : 'bg-emerald-500');
+      })
+      .catch(function () {
+        /* 用量拿不到不影响主流程 */
+      });
+  }
+
+  /** 文件变动后同时刷新列表、筛选选项与用量 */
   function refreshAll() {
     loadFiles();
     loadFacets();
+    loadUsage();
   }
 
   function renderList(data) {

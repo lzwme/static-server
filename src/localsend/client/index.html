@@ -137,6 +137,14 @@
         <button id="orderBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 hover:bg-slate-700 transition">↓ 降序</button>
       </div>
     </div>
+    <!-- 存储用量：有配额时显示进度，无配额时只显示已用 -->
+    <div id="usageBar" class="hidden mb-3">
+      <div class="flex items-center justify-between gap-2 text-[11px] text-slate-500 flex-wrap">
+        <span id="usageText"></span>
+        <span id="usageTrash"></span>
+      </div>
+      <div class="h-1 mt-1 bg-slate-800 rounded-full overflow-hidden"><div id="usageFill" class="h-full bg-emerald-500 transition-all" style="width:0%"></div></div>
+    </div>
     <div id="batchBar" class="hidden mb-2 px-3 sm:px-4 py-2 bg-slate-900 border border-slate-800 rounded-2xl flex items-center gap-2 sm:gap-3 text-xs flex-wrap">
       <label class="flex items-center gap-1.5 cursor-pointer select-none text-slate-400 hover:text-slate-200 shrink-0">
         <input type="checkbox" id="selectAll" class="accent-emerald-500 w-3.5 h-3.5">
