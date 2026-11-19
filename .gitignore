@@ -39,7 +39,7 @@ benchmarks/graphs
 *_bak
 reports/**
 
-pnpm-lock.yaml
+# 锁文件需纳入版本管理，CI 使用 --frozen-lockfile 保证依赖可复现
 package-lock.json
 yarn.lock
 yarn-error.log
