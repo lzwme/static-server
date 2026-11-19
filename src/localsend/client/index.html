@@ -345,6 +345,11 @@
       </div>
     </div>
     <p class="text-[11px] text-slate-500">修改后立即生效，无需重启服务。配置文件里的值是「出厂设置」：若之后你改了配置文件里的同一项，将以配置文件为准。</p>
+    <!-- 开放模式（未设置任何口令）下，只有本机才能改设置，避免被局域网内其它人接管 -->
+    <p id="settingsLocalHint" class="hidden text-[11px] text-amber-400 leading-relaxed">
+      ⚠️ 尚未设置任何口令，为避免被局域网内其它设备接管，设置只能在运行服务的本机浏览器里修改。
+      想远程管理：在 <span class="font-mono">ss.config.js</span> 里设置 <span class="font-mono">password</span> 后重启，或在本机页面先设置管理员口令。
+    </p>
     <div id="settingsBody" class="overflow-auto flex-1 space-y-4 pr-1"></div>
     <div class="flex items-center gap-2 border-t border-slate-800 pt-3 flex-wrap">
       <input id="settingsCurrentPwd" type="password" placeholder="修改口令时需填写当前管理员口令" autocomplete="current-password"

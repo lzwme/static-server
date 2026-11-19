@@ -3107,6 +3107,12 @@
       '<div class="text-[11px] text-slate-500 mt-1.5">' + escapeHtml(item.desc) + '</div></div>';
   }
 
+  /** 当前页面是否从回环地址打开（本机浏览器） */
+  function isLoopbackClient() {
+    var host = location.hostname;
+    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+  }
+
   /** 打开设置面板 */
   function openSettings() {
     apiFetch(API + '/settings')
@@ -3137,6 +3143,11 @@
             escapeHtml(settingsState.file) + '</span></div>';
         }
         body.innerHTML = html;
+        // 开放模式下服务端只接受本机发起的写入：非本机时提前说明，不让用户白填一遍
+        var remoteOpen = !!sessionInfo.open && !isLoopbackClient();
+        $('settingsLocalHint').classList.toggle('hidden', !remoteOpen);
+        $('settingsSave').disabled = remoteOpen;
+        $('settingsSave').title = remoteOpen ? '开放模式下只能在运行服务的本机修改设置' : '';
         $('settingsModal').classList.remove('hidden');
       })
       .catch(function () { toast('读取设置失败', 'err'); });
@@ -3177,6 +3188,11 @@
 
   /** 保存设置 */
   function saveSettings() {
+    // 开放模式 + 非本机：服务端会拒绝，这里先给出明确原因
+    if (sessionInfo.open && !isLoopbackClient()) {
+      toast('尚未设置口令，请在本机浏览器修改设置，或在配置文件里设置 password', 'err');
+      return;
+    }
     var changes = collectSettingChanges();
     if (!Object.keys(changes).length) {
       toast('没有需要保存的修改', 'err');
@@ -3234,6 +3250,10 @@
 
   /** 恢复某一项的默认值 */
   function resetSetting(key) {
+    if (sessionInfo.open && !isLoopbackClient()) {
+      toast('尚未设置口令，请在本机浏览器修改设置', 'err');
+      return;
+    }
     apiFetch(API + '/settings/' + encodeURIComponent(key), { method: 'DELETE' })
       .then(function (r) { return r.json(); })
       .then(function (json) {

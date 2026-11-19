@@ -657,6 +657,33 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     res.status(403).json({ code: 1, msg: '上传需要访客口令，请先登录', needAuth: true });
   }
 
+  /**
+   * 设置写入的权限。
+   *
+   * 开放模式（一个口令都没配）下 requireAdmin 对所有人放行，
+   * 于是局域网内任何人都能改口令/令牌、把服务接管过去：
+   * 他设置一个管理员口令后自己登录，就能删掉全部文件。
+   *
+   * 这里额外加一道限制：开放模式下只允许从本机（回环地址）发起写入。
+   * 想远程管理就先在配置文件里设置 password，或在本机浏览器里先设好口令。
+   */
+  function requireSettingsWrite(req: Request, res: Response, next: NextFunction) {
+    if (!canManage(res.locals.role)) {
+      return void res.status(403).json({ code: 1, msg: '该操作需要管理员权限，请先登录', needAuth: true });
+    }
+    if (auth.open) {
+      const remote = String(req.socket?.remoteAddress || '');
+      if (!isLoopbackAddress(remote)) {
+        return void res.status(403).json({
+          code: 1,
+          msg: '尚未设置口令：只能在运行服务的本机上修改设置（也可在配置文件里设置 password 后再远程管理）',
+          needLocal: true,
+        });
+      }
+    }
+    next();
+  }
+
   // 注销 / 查询当前身份
   app.post('/localsend/api/logout', (req: Request, res: Response) => {
     const token = sessionTokenOf(req);
@@ -826,8 +853,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     res.json({ code: 0, data: buildSettingsPayload() });
   });
 
-  // 修改设置（仅管理员）
-  app.post('/localsend/api/settings', requireAdmin, express.json({ limit: '64kb' }), (req: Request, res: Response) => {
+  // 修改设置（仅管理员；开放模式下仅限本机）
+  app.post('/localsend/api/settings', requireSettingsWrite, express.json({ limit: '64kb' }), (req: Request, res: Response) => {
     const changes = req.body?.changes;
     if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
       return void res.status(400).json({ code: 1, msg: '缺少要修改的配置项' });
@@ -857,8 +884,8 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     res.json({ code: 0, data: { applied: normalized.map((i) => i.key), ...buildSettingsPayload() } });
   });
 
-  // 恢复某项设置为配置文件里的值
-  app.delete('/localsend/api/settings/:key', requireAdmin, (req: Request, res: Response) => {
+  // 恢复某项设置为配置文件里的值（开放模式下同样仅限本机）
+  app.delete('/localsend/api/settings/:key', requireSettingsWrite, (req: Request, res: Response) => {
     const key = String(req.params.key || '') as SettingKey;
     if (!(key in SETTING_DEFS)) return void res.status(400).json({ code: 1, msg: '未知的配置项' });
     settings.clear(key);
