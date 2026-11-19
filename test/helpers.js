@@ -13,6 +13,32 @@ function tempDir(prefix = 'sserver-test-') {
 }
 
 /**
+ * 测试期间的用户主目录（隔离用）。
+ *
+ * 配置加载顺序是「内置默认值 < 用户级配置 < 当前目录配置」，
+ * 其中用户级配置来自 ~/.static-server。若不隔离，测试会读到开发者机器上的
+ * 真实配置（口令、令牌等），导致用例结果不可预期；
+ * 运行时设置文件同样会写进真实目录。
+ * 因此这里把用户主目录指向临时目录，两者一并隔离。
+ */
+let testHomeDir = null;
+
+/** 隔离用户级配置与运行时设置目录 */
+function isolateUserHome() {
+  if (!testHomeDir) {
+    testHomeDir = tempDir('sserver-home-');
+    process.env.USERPROFILE = testHomeDir;
+    process.env.HOME = testHomeDir;
+  }
+  // 运行时设置文件默认写在用户配置目录下，也要隔离；
+  // 若用例显式指定了路径（如设置接口测试），则尊重用例的指定
+  if (!process.env.SS_LOCALSEND_SETTINGS) {
+    process.env.SS_LOCALSEND_SETTINGS = path.join(testHomeDir, 'localsend-settings.json');
+  }
+  return testHomeDir;
+}
+
+/**
  * 准备一个临时工作目录并切换过去。
  *
  * 配置加载顺序是「内置默认值 < 用户级配置 < 当前目录配置」，
@@ -21,6 +47,7 @@ function tempDir(prefix = 'sserver-test-') {
  * extra 用于追加 localsend 下的配置项（如 password、token）。
  */
 function useTempConfig(storageDir, extra) {
+  isolateUserHome();
   const dir = tempDir('sserver-cfg-');
   const localsend = { enabled: true, dir: storageDir, ...(extra || {}) };
   const config = { port: 0, localsend };
