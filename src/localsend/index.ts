@@ -391,6 +391,19 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     verifySession: (token) => !!auth.get(token),
     maxConcurrent: () => live.maxConcurrent,
     rateLimit: () => live.rateLimit,
+    /**
+     * 分片上传的独立预算。
+     *
+     * 分片按「片」发请求：1GB / 4MB 就是 256 个请求，必然打满 120 次/分的
+     * 普通接口预算，表现为「大文件传到一半就失败」。这里按「一次完整上传
+     * 所需的分片数 × 2 + 余量」给预算，既允许传完，也仍然拦得住滥用。
+     */
+    chunkRateLimit: () => {
+      const chunkSize = 4 * 1024 * 1024; // 与网页端的分片大小一致
+      const maxSize = live.maxSize > 0 ? live.maxSize : 1024 * 1024 * 1024;
+      const chunks = Math.ceil(maxSize / chunkSize);
+      return { windowMs: live.rateLimit.windowMs, max: Math.max(300, chunks * 2 + 50) };
+    },
   });
 
   // WebDAV 挂载接口：把存储目录暴露为网络盘（资源管理器 / iOS 文件 App 均可挂载）。
@@ -418,8 +431,14 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   // 放在认证接口之前：盐值/登录/换令牌这三个接口免鉴权，
   // 而摘要比对本身要跑 PBKDF2，是最耗 CPU 的路径。
   // 不限流的话，一次死循环式的重复提交就能把服务端的 CPU 打满。
+  //
+  // 分片上传走独立的桶：它按「片」发请求，一个大文件天然产生几百个请求，
+  // 与普通接口共用预算就会「越大越传不完」。鉴权与并发限制仍然照旧生效。
   // ---------------------------------------------------------------------------
-  app.use('/localsend/api', guard.rateLimit);
+  app.use('/localsend/api', (req: Request, res: Response, next: NextFunction) => {
+    if (req.path.startsWith('/chunk/')) return guard.rateLimitChunk(req, res, next);
+    return guard.rateLimit(req, res, next);
+  });
 
   // ---------------------------------------------------------------------------
   // 认证接口（免鉴权）：客户端先取盐值算出摘要，再换取会话令牌
@@ -1105,7 +1124,9 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
   app.post(
     '/localsend/api/chunk/upload',
     requireWrite,
-    guard.limitConcurrent,
+    // 分片上传有自己的并发预算：一个文件就开 3 个分片任务，
+    // 沿用文件级并发数（默认 3）会让并发分片互相挤掉
+    guard.limitConcurrentChunk,
     chunkUpload.single('chunk'),
     (req: Request, res: Response) => {
       const uploadId = String(req.query.uploadId || '');

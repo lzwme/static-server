@@ -32,12 +32,24 @@ export interface GuardOptions {
   maxConcurrent?: number | (() => number);
   /** 频率限制：窗口毫秒数与窗口内最大请求数，默认 120 次 / 60 秒。传入函数表示运行时取值 */
   rateLimit?: { windowMs?: number; max?: number } | (() => { windowMs?: number; max?: number } | undefined);
+  /**
+   * 分片上传的独立频率限制。
+   *
+   * 分片上传按「片」发请求，一个大文件天然会产生几百个请求；
+   * 若与普通接口共用一个桶，上传越大越容易把自己限死。
+   * 这里单独给一个更宽的桶，普通接口的预算不受影响。
+   */
+  chunkRateLimit?: { windowMs?: number; max?: number } | (() => { windowMs?: number; max?: number } | undefined);
 }
 
 export interface Guard {
   requireAuth: (req: Request, res: Response, next: NextFunction) => void;
   rateLimit: (req: Request, res: Response, next: NextFunction) => void;
+  /** 分片上传专用的频率限制（独立计数，不与普通接口共享预算） */
+  rateLimitChunk: (req: Request, res: Response, next: NextFunction) => void;
   limitConcurrent: (req: Request, res: Response, next: NextFunction) => void;
+  /** 分片上传专用的并发限制（预算比文件级并发更宽） */
+  limitConcurrentChunk: (req: Request, res: Response, next: NextFunction) => void;
   /** 当前并发占用统计（用于状态查询） */
   stats: () => { concurrent: number; ips: number };
 }
@@ -87,21 +99,67 @@ export function createGuard(options: GuardOptions = {}): Guard {
     const raw = typeof options.rateLimit === 'function' ? options.rateLimit() : options.rateLimit;
     return { windowMs: raw?.windowMs ?? 60_000, max: raw?.max ?? 120 };
   };
+  /**
+   * 运行时读取分片上传的频率限制。
+   *
+   * 默认比普通接口宽得多：未显式配置时按 60 秒 600 片给，
+   * 1GB / 4MB = 256 片，仍有余量应对重试与并发分片。
+   */
+  const getChunkRateLimit = (): { windowMs: number; max: number } => {
+    const raw = typeof options.chunkRateLimit === 'function' ? options.chunkRateLimit() : options.chunkRateLimit;
+    return { windowMs: raw?.windowMs ?? 60_000, max: raw?.max ?? 600 };
+  };
 
   /** ip -> 当前并发数 */
   const concurrent = new Map<string, number>();
-  /** ip -> 最近请求时间戳队列 */
+  /** ip -> 最近请求时间戳队列（普通接口） */
   const hits = new Map<string, number[]>();
+  /** ip -> 最近请求时间戳队列（分片上传，独立预算） */
+  const chunkHits = new Map<string, number[]>();
+
+  /**
+   * 生成一个基于滑动窗口的限流中间件。
+   *
+   * 每个桶有自己的计数表，互不影响；
+   * 这样「分片请求多」不会挤占「列表/登录」的预算。
+   */
+  const createRateLimiter = (
+    bucket: Map<string, number[]>,
+    readLimit: () => { windowMs: number; max: number },
+  ): Guard['rateLimit'] => {
+    return (req, res, next) => {
+      const { windowMs, max: maxRequests } = readLimit();
+      if (!maxRequests || maxRequests <= 0) return next();
+      const ip = clientIp(req, trustProxy);
+      const now = Date.now();
+      const list = (bucket.get(ip) || []).filter((t) => now - t < windowMs);
+      if (list.length >= maxRequests) {
+        res.status(429).json({ code: 1, msg: '请求过于频繁，请稍后再试' });
+        return;
+      }
+      list.push(now);
+      bucket.set(ip, list);
+      next();
+    };
+  };
+
+  const rateLimit = createRateLimiter(hits, getRateLimit);
+  const rateLimitChunk = createRateLimiter(chunkHits, getChunkRateLimit);
 
   // 定期清理过期数据，避免长期运行内存增长
   const timer = setInterval(() => {
     const now = Date.now();
     const { windowMs } = getRateLimit();
-    for (const [ip, list] of hits) {
-      const valid = list.filter((t) => now - t < windowMs);
-      if (valid.length) hits.set(ip, valid);
-      else hits.delete(ip);
-    }
+    const chunkWindow = getChunkRateLimit().windowMs;
+    const prune = (bucket: Map<string, number[]>, window: number) => {
+      for (const [ip, list] of bucket) {
+        const valid = list.filter((t) => now - t < window);
+        if (valid.length) bucket.set(ip, valid);
+        else bucket.delete(ip);
+      }
+    };
+    prune(hits, windowMs);
+    prune(chunkHits, chunkWindow);
     for (const [ip, count] of concurrent) {
       if (count <= 0) concurrent.delete(ip);
     }
@@ -134,48 +192,57 @@ export function createGuard(options: GuardOptions = {}): Guard {
     return next();
   };
 
-  const rateLimit: Guard['rateLimit'] = (req, res, next) => {
-    const { windowMs, max: maxRequests } = getRateLimit();
-    if (!maxRequests || maxRequests <= 0) return next();
-    const ip = clientIp(req, trustProxy);
-    const now = Date.now();
-    const list = (hits.get(ip) || []).filter((t) => now - t < windowMs);
-    if (list.length >= maxRequests) {
-      res.status(429).json({ code: 1, msg: '请求过于频繁，请稍后再试' });
-      return;
-    }
-    list.push(now);
-    hits.set(ip, list);
-    next();
+  /**
+   * 生成并发限制中间件。
+   *
+   * 分片上传的一次传输会并发发多个分片请求，因此它需要比「文件级并发数」
+   * 更宽的预算；否则一个 3 并发的大文件就能把整个 IP 的额度占满。
+   */
+  const createConcurrentLimiter = (readMax: () => number): Guard['limitConcurrent'] => {
+    return (req, res, next) => {
+      const maxConcurrent = readMax();
+      if (!maxConcurrent || maxConcurrent <= 0) return next();
+      const ip = clientIp(req, trustProxy);
+      const current = concurrent.get(ip) || 0;
+      if (current >= maxConcurrent) {
+        res.status(429).json({ code: 1, msg: `并发上传数已达上限（${maxConcurrent}），请稍后再试` });
+        return;
+      }
+      concurrent.set(ip, current + 1);
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        const count = (concurrent.get(ip) || 1) - 1;
+        if (count <= 0) concurrent.delete(ip);
+        else concurrent.set(ip, count);
+      };
+      res.on('finish', release);
+      res.on('close', release);
+      next();
+    };
   };
 
-  const limitConcurrent: Guard['limitConcurrent'] = (req, res, next) => {
-    const maxConcurrent = getMaxConcurrent();
-    if (!maxConcurrent || maxConcurrent <= 0) return next();
-    const ip = clientIp(req, trustProxy);
-    const current = concurrent.get(ip) || 0;
-    if (current >= maxConcurrent) {
-      res.status(429).json({ code: 1, msg: `并发上传数已达上限（${maxConcurrent}），请稍后再试` });
-      return;
-    }
-    concurrent.set(ip, current + 1);
-    let released = false;
-    const release = () => {
-      if (released) return;
-      released = true;
-      const count = (concurrent.get(ip) || 1) - 1;
-      if (count <= 0) concurrent.delete(ip);
-      else concurrent.set(ip, count);
-    };
-    res.on('finish', release);
-    res.on('close', release);
-    next();
-  };
+  const limitConcurrent = createConcurrentLimiter(getMaxConcurrent);
+  /**
+   * 分片上传的并发预算：按「文件并发数 × 3 + 3」给。
+   *
+   * 网页端一个分片文件开 3 个分片任务，最多同时传 3 个文件，
+   * 因此 3 × 3 = 9 是正常峰值；默认 maxConcurrent=3 时预算为 12，
+   * 既容得下正常并发，也不会让单个 IP 无限堆请求。
+   */
+  const limitConcurrentChunk = createConcurrentLimiter(() => {
+    const base = getMaxConcurrent();
+    if (!base || base <= 0) return 0;
+    return base * 3 + 3;
+  });
 
   return {
     requireAuth,
     rateLimit,
+    rateLimitChunk,
     limitConcurrent,
+    limitConcurrentChunk,
     stats: () => ({
       concurrent: [...concurrent.values()].reduce((a, b) => a + b, 0),
       ips: concurrent.size,
