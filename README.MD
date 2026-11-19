@@ -493,7 +493,7 @@ assets/localsend/       产物：style.css（由 input.css 编译）、vendor/qr
 dist/                   发布物：localsend/ + assets/（构建时从上述两处拷贝而来）
 ```
 
-构建时先由 `pnpm build:css` 编译样式、`pnpm build:vendor` 拷贝 vendor 库，再由 `pnpm build` 统一拷贝到 `dist/`，顺序不可颠倒（`scripts/copy-assets.js` 会先清空目标目录）。产物仅在构建后生成，首次克隆仓库时 `assets/` 不存在属正常现象。
+构建时先由 `pnpm build:css` 编译样式、`pnpm build:vendor` 拷贝 vendor 库，再由 `pnpm build` 统一拷贝到 `dist/`，顺序不可颠倒（`scripts/copy-assets.js` 会先清空目标目录）。产物由构建生成，`pnpm dev` 会自动先执行 `build:assets`，无需手动准备。
 
 服务端不写死产物路径，而是按运行时目录特征自动识别：
 
