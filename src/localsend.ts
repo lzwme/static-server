@@ -47,6 +47,14 @@ const PAGE_REL_PATH = './localsend/index.html';
 /** 页面静态资源目录（相对本模块），与 PAGE_REL_PATH 同级 */
 const PAGE_DIR = './localsend';
 
+/**
+ * 前端构建产物目录（相对本模块）。
+ *
+ * 源码目录只放需要人工维护的文件，tailwind 生成的样式与 vendor 第三方库
+ * 统一放在 src/assets 下，由构建生成、不纳入版本管理。
+ */
+const ASSETS_DIR = './assets/localsend';
+
 /** 严格解码字节，编码不匹配时返回 null */
 function decodeStrict(bytes: Buffer, encoding: string): string | null {
   try {
@@ -675,11 +683,22 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
     res.type('html').send(pageHtml);
   });
 
-  // 页面静态资源（样式、二维码库、图标等）：与页面同目录，供离线局域网使用
+  // 页面静态资源（图标、页面脚本等）：与页面同目录，供离线局域网使用
   // 使用 ETag 协商缓存：升级后样式与页面版本始终一致，避免浏览器拿到旧的 CSS
   app.use(
     '/localsend',
     express.static(resolve(__dirname, PAGE_DIR), {
+      index: false,
+      maxAge: 0,
+      etag: true,
+    }),
+  );
+
+  // 前端构建产物（tailwind 样式、vendor 第三方库）：单独放在 assets 目录，
+  // 与源码分离。放在后面兜底，避免覆盖页面目录里的同名文件
+  app.use(
+    '/localsend',
+    express.static(resolve(__dirname, ASSETS_DIR), {
       index: false,
       maxAge: 0,
       etag: true,

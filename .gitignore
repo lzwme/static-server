@@ -25,6 +25,9 @@ dist
 *.log
 *.gz
 
+# 前端构建产物：由 npm run build 生成，不纳入版本管理
+/src/assets/
+
 
 # Coveralls
 coverage

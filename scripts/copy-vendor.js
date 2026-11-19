@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /*
- * 拷贝前端第三方库到 src/localsend/vendor
+ * 拷贝前端第三方库到 src/assets/localsend/vendor
  * 目的：让 LocalSend 页面完全离线可用（局域网常常没有外网，CDN 会加载失败）
- * 仅用于开发/构建，产物已提交到仓库
+ * 仅用于开发/构建，产物在 src/assets 下，不纳入版本管理
  */
 const { copyFileSync, existsSync, mkdirSync } = require('node:fs');
 const { dirname, join, resolve } = require('node:path');
 
 const root = resolve(__dirname, '..');
-const vendorDir = join(root, 'src/localsend/vendor');
+const vendorDir = join(root, 'src/assets/localsend/vendor');
 
 /** 需要本地化的前端库：源文件 → 目标文件 */
 const vendorFiles = [

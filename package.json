@@ -46,7 +46,7 @@
     "test": "npm run build && node --test --test-timeout=60000 test/",
     "build": "npm run clean && npm run build:assets && tsc && node scripts/copy-assets.js",
     "build:assets": "npm run build:css && npm run build:vendor",
-    "build:css": "tailwindcss -i src/localsend/input.css -o src/localsend/style.css --minify",
+    "build:css": "tailwindcss -i src/localsend/input.css -o src/assets/localsend/style.css --minify",
     "build:vendor": "node scripts/copy-vendor.js",
     "clean": "flh rm -f dist",
     "version": "standard-version",
