@@ -485,14 +485,22 @@ npm link
 
 ### 目录结构与构建产物
 
-`src/localsend/` 是插件的**源码**目录（页面、脚本、图标等），`src/assets/` 是**构建产物**目录，由构建脚本生成并已通过 `.gitignore` 排除，不纳入 git 管理：
+`src/` 只放需要人工维护的源码，`assets/` 是**构建产物**目录，由构建脚本生成并已通过 `.gitignore` 排除，不纳入 git 管理：
 
 ```
 src/localsend/          源码：index.html / app.js / input.css / sw.js / icons/ ...
-src/assets/localsend/   产物：style.css（由 input.css 编译）、vendor/qr-code-styling.js
+assets/localsend/       产物：style.css（由 input.css 编译）、vendor/qr-code-styling.js
+dist/                   发布物：localsend/ + assets/（构建时从上述两处拷贝而来）
 ```
 
-构建时先由 `pnpm build:css` 编译样式、`pnpm build:vendor` 拷贝 vendor 库，再由 `pnpm build` 统一拷贝到 `dist/`，顺序不可颠倒（`scripts/copy-assets.js` 会先清空目标目录）。产物仅在构建后生成，首次克隆仓库时 `src/assets/` 不存在属正常现象。
+构建时先由 `pnpm build:css` 编译样式、`pnpm build:vendor` 拷贝 vendor 库，再由 `pnpm build` 统一拷贝到 `dist/`，顺序不可颠倒（`scripts/copy-assets.js` 会先清空目标目录）。产物仅在构建后生成，首次克隆仓库时 `assets/` 不存在属正常现象。
+
+服务端不写死产物路径，而是按运行时目录特征自动识别：
+
+- **运行态**（模块位于 `dist/`）：读取 `dist/assets/localsend`，发布包自带全部前端资源，开箱即用
+- **开发态**（模块位于 `src/`）：读取仓库根的 `assets/localsend`
+
+页面 URL 不受影响，仍是 `/localsend/style.css`。
 
 ### 自动化测试
 
