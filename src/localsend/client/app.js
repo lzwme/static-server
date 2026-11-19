@@ -1726,8 +1726,10 @@
   }
   var uploadQueue = []; // 待上传的文件
   var uploadActive = 0; // 当前进行中的上传数
+  var activeItems = []; // 进行中的任务（每项带 cancel 方法，供「全部取消」调用）
   var uploadDone = 0; // 已完成（含失败）的数量
   var uploadFailed = 0; // 失败数量
+  var uploadCanceled = 0; // 用户主动取消的数量
   var uploadTotal = 0; // 本批次总数
   var listReloadTimer = null;
 
@@ -1790,7 +1792,33 @@
       '<span class="text-slate-400">已完成</span>' +
       (running ? '<span class="text-sky-400 font-mono">' + running + '</span><span class="text-slate-400">传输中</span>' : '') +
       (pending ? '<span class="text-slate-400 font-mono">' + pending + '</span><span class="text-slate-400">排队中</span>' : '') +
-      (uploadFailed ? '<span class="text-red-400 font-mono">' + uploadFailed + '</span><span class="text-slate-400">失败</span>' : '');
+      (uploadCanceled ? '<span class="text-slate-400 font-mono">' + uploadCanceled + '</span><span class="text-slate-400">已取消</span>' : '') +
+      (uploadFailed ? '<span class="text-red-400 font-mono">' + uploadFailed + '</span><span class="text-slate-400">失败</span>' : '') +
+      (running || pending
+        ? '<button data-cancel-all class="ml-auto px-2 py-0.5 rounded border border-red-500/40 text-red-400 hover:bg-red-500/10 transition shrink-0">全部取消</button>'
+        : '');
+    var cancelAll = el.querySelector('[data-cancel-all]');
+    if (cancelAll) cancelAll.addEventListener('click', cancelAllUploads);
+  }
+
+  /** 取消本批次所有还没传完的文件 */
+  function cancelAllUploads() {
+    var pendingCount = uploadQueue.length;
+    uploadQueue.length = 0;
+    uploadTotal = Math.max(0, uploadTotal - pendingCount);
+    var running = activeItems.slice();
+    running.forEach(function (item) {
+      if (item.cancel) item.cancel();
+    });
+    // 没有进行中的任务时不会有回调来收尾，这里手动清空批次状态
+    if (!running.length) {
+      uploadTotal = 0;
+      uploadDone = 0;
+      uploadFailed = 0;
+      uploadCanceled = 0;
+      updateQueueSummary();
+    }
+    toast('已取消未完成的上传');
   }
 
   function enqueueUpload(file, rel) {
@@ -1804,10 +1832,11 @@
     while (uploadActive < UPLOAD_CONCURRENCY && uploadQueue.length) {
       var item = uploadQueue.shift();
       uploadActive += 1;
-      uploadOne(item, 0, function (ok) {
+      uploadOne(item, 0, function (ok, canceled) {
         uploadActive -= 1;
         uploadDone += 1;
-        if (!ok) uploadFailed += 1;
+        if (canceled) uploadCanceled += 1;
+        else if (!ok) uploadFailed += 1;
         updateQueueSummary();
         if (uploadDone >= uploadTotal) {
           // 本批次结束
@@ -1815,6 +1844,7 @@
           uploadTotal = 0;
           uploadDone = 0;
           uploadFailed = 0;
+          uploadCanceled = 0;
           setTimeout(function () {
             updateQueueSummary();
             refreshAll();
@@ -1898,6 +1928,19 @@
         var next = 0;
         var workers = Math.min(CHUNK_CONCURRENCY, Math.max(1, pending.length));
         var active = workers; // 仍在工作的分片任务数
+
+        /** 分片上传的取消入口：停止派发新分片，并清掉服务端暂存 */
+        item.chunkCancel = function () {
+          if (stopped) return;
+          stopped = true;
+          // 任务即将被清理，指纹记录不再指向有效任务
+          saveUploadId(fileKey, '');
+          if (uploadId) {
+            apiFetch(API + '/chunk/cancel?uploadId=' + encodeURIComponent(uploadId), { method: 'DELETE' }).catch(function () {});
+          }
+          toast('已取消上传：' + rel);
+          ui.finish(false, '已取消', true);
+        };
 
         /** 刷新百分比、速度与状态文案 */
         function updateProgress() {
@@ -2025,23 +2068,108 @@
     row.innerHTML =
       '<div class="flex items-center justify-between gap-3 mb-2">' +
         '<span class="text-xs truncate text-slate-300" title="' + escapeHtml(rel) + '">' + escapeHtml(rel) + '</span>' +
-        '<span class="text-xs text-emerald-400 shrink-0 font-mono" data-pct>0%</span>' +
+        '<span class="flex items-center gap-2 shrink-0">' +
+          '<span class="text-xs text-emerald-400 font-mono" data-pct>0%</span>' +
+          '<button type="button" data-cancel class="text-[10px] px-1.5 py-0.5 rounded border border-slate-600 text-slate-400 hover:text-red-400 hover:border-red-500/40 transition">取消</button>' +
+        '</span>' +
       '</div>' +
       '<div class="h-1.5 bg-slate-700 rounded-full overflow-hidden">' +
         '<div class="h-full bg-emerald-500 transition-all duration-200" style="width:0%"></div>' +
       '</div>' +
-      '<div class="flex justify-between mt-1.5 text-[10px] text-slate-500"><span data-status>等待上传…</span><span data-speed class="font-mono"></span></div>';
+      '<div class="flex justify-between mt-1.5 text-[10px] text-slate-500"><span data-status>等待上传…</span><span data-speed class="font-mono"></span></div>' +
+      // 失败/取消后才出现：重试与关闭
+      '<div class="hidden mt-2 items-center gap-2" data-actions>' +
+        '<button type="button" data-retry class="text-[10px] px-2 py-1 rounded border border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 transition">重试</button>' +
+        '<button type="button" data-dismiss class="text-[10px] px-2 py-1 rounded border border-slate-600 text-slate-400 hover:bg-slate-700 transition">关闭</button>' +
+      '</div>';
     $('uploadList').appendChild(row);
     var pctEl = row.querySelector('[data-pct]');
     var barEl = row.querySelector('.h-full');
     var statusEl = row.querySelector('[data-status]');
     var speedEl = row.querySelector('[data-speed]');
+    var actionsEl = row.querySelector('[data-actions]');
+    var cancelBtn = row.querySelector('[data-cancel]');
+    var xhr = null;
+    var finished = false;
+    var canceled = false;
+
+    /** 从「进行中」列表摘掉自己（失败重试时会重新加入） */
+    function detach() {
+      item.cancel = null;
+      item.chunkCancel = null;
+      var idx = activeItems.indexOf(item);
+      if (idx >= 0) activeItems.splice(idx, 1);
+    }
+
+    /** 收尾：ok=成功，isCanceled=用户主动取消（不计入失败） */
+    function finish(ok, msg, isCanceled) {
+      if (finished) return;
+      finished = true;
+      detach();
+      if (ok) barEl.style.width = '100%';
+      barEl.className = 'h-full ' + (ok ? 'bg-emerald-500' : isCanceled ? 'bg-slate-500' : 'bg-red-500');
+      statusEl.textContent = ok ? '上传完成' : msg || (isCanceled ? '已取消' : '上传失败');
+      cancelBtn.classList.add('hidden');
+      if (ok) {
+        pctEl.textContent = '100%';
+        setTimeout(function () { row.remove(); }, 1500);
+      } else {
+        // 失败 / 取消的行常驻，用户可重试或手动关闭（以前 6 秒就自动消失，看不到原因）
+        actionsEl.classList.remove('hidden');
+        actionsEl.classList.add('flex');
+      }
+      scheduleListReload();
+      onDone(ok, !!isCanceled);
+    }
+
+    /** 取消这次上传 */
+    function cancelUpload() {
+      if (finished || canceled) return;
+      canceled = true;
+      statusEl.textContent = '已取消';
+      // 分片上传自己负责停止派发并清理服务端暂存
+      if (item.chunkCancel) {
+        item.chunkCancel();
+        return;
+      }
+      try {
+        if (xhr) xhr.abort();
+      } catch (e) {
+        // 忽略取消失败：下面的 finish 仍会收尾
+      }
+      finish(false, '已取消', true);
+    }
+
+    /** 限流/网络错误后的退避重试：保持活跃计数，避免队列重新调度同一任务 */
+    function retryLater(delay, label) {
+      statusEl.textContent = label;
+      barEl.className = 'h-full bg-amber-500';
+      setTimeout(function () {
+        if (canceled) return;
+        // 让本次调用的闭包失效，避免和新的调用重复收尾
+        finished = true;
+        detach();
+        row.remove();
+        uploadOne(item, retryCount + 1, onDone);
+      }, delay);
+    }
+
+    item.cancel = cancelUpload;
+    activeItems.push(item);
+    cancelBtn.addEventListener('click', cancelUpload);
+    row.querySelector('[data-retry]').addEventListener('click', function () {
+      row.remove();
+      enqueueUpload(file, rel);
+      pumpQueue();
+    });
+    row.querySelector('[data-dismiss]').addEventListener('click', function () { row.remove(); });
+
     // 大文件改走分片并发上传，速度更快
     if (file.size >= CHUNK_THRESHOLD) {
       uploadByChunks(item, { pctEl: pctEl, barEl: barEl, statusEl: statusEl, speedEl: speedEl, finish: finish });
       return;
     }
-    var xhr = new XMLHttpRequest();
+    xhr = new XMLHttpRequest();
     xhr.open('POST', API + '/upload');
     // 上传需要访客以上权限，会话令牌随请求头带上
     if (sessionToken) xhr.setRequestHeader('X-Localsend-Session', sessionToken);
@@ -2060,23 +2188,7 @@
         lastTime = now;
       }
     };
-    var finished = false;
-    function finish(ok, msg) {
-      if (finished) return;
-      finished = true;
-      barEl.style.width = ok ? '100%' : barEl.style.width;
-      barEl.className = 'h-full ' + (ok ? 'bg-emerald-500' : 'bg-red-500');
-      statusEl.textContent = ok ? '上传完成' : msg || '上传失败';
-      if (ok) {
-        pctEl.textContent = '100%';
-        setTimeout(function () { row.remove(); }, 1500);
-      } else {
-        // 失败的任务保留在列表里，便于用户查看原因
-        setTimeout(function () { row.remove(); }, 6000);
-      }
-      scheduleListReload();
-      onDone(ok);
-    }
+    xhr.onabort = function () { finish(false, '已取消', true); };
     xhr.onload = function () {
       var json = null;
       try { json = JSON.parse(xhr.responseText); } catch (e) { json = null; }
@@ -2096,14 +2208,7 @@
       var msg = (json && json.msg) || '上传失败';
       // 429 表示触发了并发/频率限制，退避后重试
       if (xhr.status === 429 && retryCount < MAX_RETRY) {
-        statusEl.textContent = msg + '，重试中…';
-        barEl.className = 'h-full bg-amber-500';
-        var delay = 800 * Math.pow(2, retryCount);
-        setTimeout(function () {
-          row.remove();
-          // 重试期间保持活跃计数不变，避免队列在此期间调度新任务
-          uploadOne(item, retryCount + 1, onDone);
-        }, delay);
+        retryLater(800 * Math.pow(2, retryCount), msg + '，重试中…');
         return;
       }
       toast(msg + '：' + rel, 'err');
@@ -2111,12 +2216,7 @@
     };
     xhr.onerror = function () {
       if (retryCount < MAX_RETRY) {
-        statusEl.textContent = '网络错误，重试中…';
-        barEl.className = 'h-full bg-amber-500';
-        setTimeout(function () {
-          row.remove();
-          uploadOne(item, retryCount + 1, onDone);
-        }, 800 * Math.pow(2, retryCount));
+        retryLater(800 * Math.pow(2, retryCount), '网络错误，重试中…');
         return;
       }
       statusEl.textContent = '网络错误';
