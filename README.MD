@@ -483,6 +483,17 @@ npm link
 
 开发模式依赖 [bun](https://bun.sh/)（`bun run src/cli.ts` 直接执行 TS 源码），不再依赖 ts-node。
 
+### 目录结构与构建产物
+
+`src/localsend/` 是插件的**源码**目录（页面、脚本、图标等），`src/assets/` 是**构建产物**目录，由构建脚本生成并已通过 `.gitignore` 排除，不纳入 git 管理：
+
+```
+src/localsend/          源码：index.html / app.js / input.css / sw.js / icons/ ...
+src/assets/localsend/   产物：style.css（由 input.css 编译）、vendor/qr-code-styling.js
+```
+
+构建时先由 `pnpm build:css` 编译样式、`pnpm build:vendor` 拷贝 vendor 库，再由 `pnpm build` 统一拷贝到 `dist/`，顺序不可颠倒（`scripts/copy-assets.js` 会先清空目标目录）。产物仅在构建后生成，首次克隆仓库时 `src/assets/` 不存在属正常现象。
+
 ### 自动化测试
 
 测试使用 Node 内置的测试运行器，不引入额外依赖，运行在编译产物（`dist`）之上：
