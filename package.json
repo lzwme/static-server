@@ -43,7 +43,7 @@
     "dev": "npm run build:assets && bun run src/cli.ts",
     "dev:watch": "npm run build:assets && bun --watch src/cli.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run build && node --test --test-timeout=60000 test/",
+    "test": "npm run build && node --test --test-timeout=60000 \"test/*.test.js\"",
     "build": "npm run clean && npm run build:assets && tsc && node scripts/copy-assets.js",
     "build:assets": "npm run build:css && npm run build:vendor",
     "build:css": "tailwindcss -i src/localsend/styles/input.css -o assets/localsend/style.css --minify",
