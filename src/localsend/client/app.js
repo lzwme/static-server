@@ -3663,32 +3663,37 @@
   function collectSettingChanges() {
     var changes = {};
     var rate = null;
+    var rateTouched = false;
     var nodes = $('settingsBody').querySelectorAll('[data-key]');
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
       var key = el.dataset.key;
+      // 频率限制的两个字段要一起提交：服务端对缺失字段会用默认值补齐，
+      // 只提交其中一个会把另一个悄悄打回默认值
+      if (key === 'rateLimit.windowMs' || key === 'rateLimit.max') {
+        if (!rate) rate = {};
+        if (el.dataset.touched === '1') rateTouched = true;
+        var rateNum = Number(el.value);
+        if (el.value === '' || !isFinite(rateNum)) continue;
+        if (key === 'rateLimit.windowMs') rate.windowMs = rateNum * 1000;
+        else rate.max = rateNum;
+        continue;
+      }
       // 只提交用户动过的输入框
       if (el.dataset.touched !== '1') continue;
       var raw = el.value;
       if (el.type === 'password' && !raw) continue; // 敏感项留空表示不修改
-      if (key.indexOf('rateLimit.') === 0) {
-        if (!rate) rate = {};
-        var field = key.slice('rateLimit.'.length);
-        var num = Number(raw);
-        rate[field] = field === 'windowMs' ? num * 1000 : num;
-        continue;
-      }
       if (el.type === 'number') {
-        changes[key] = Number(raw);
-        continue;
-      }
-      if (key === 'blockExtensions') {
-        changes[key] = raw;
+        // 输入框按更易读的单位展示（MB / 小时），提交前换回服务端使用的原始单位（字节 / 毫秒）
+        var shown = Number(raw);
+        if (raw === '' || !isFinite(shown)) continue; // 清空表示不修改，避免写入 0
+        var factor = SETTINGS_UNITS[key] ? SETTINGS_UNITS[key].factor : 1;
+        changes[key] = Math.round(shown * factor);
         continue;
       }
       changes[key] = raw;
     }
-    if (rate) changes.rateLimit = rate;
+    if (rate && rateTouched && rate.windowMs !== undefined && rate.max !== undefined) changes.rateLimit = rate;
     return changes;
   }
 
