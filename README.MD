@@ -457,7 +457,7 @@ ss fix-localsend-names
 
 | 接口 | 说明 |
 | --- | --- |
-| `GET /localsend/api/list` | 分页文件列表。参数：`page`、`pageSize`（默认 50，上限 500）、`q`（关键词，匹配相对路径）、`dir`（目录，`__root__` 表示根目录）、`ext`（扩展名）、`since`（只看该时间戳之后修改的文件，用于收件箱）、`sort`（`time`/`size`）、`order`（`asc`/`desc`） |
+| `GET /localsend/api/list` | 分页文件列表。参数：`page`、`pageSize`（默认 50，上限 500）、`q`（关键词，匹配相对路径）、`dir`（目录，`__root__` 表示根目录）、`ext`（扩展名）、`since`（只看该时间戳之后修改的文件，用于收件箱）、`sort`（`time`/`size`/`name`）、`order`（`asc`/`desc`） |
 | `GET /localsend/api/facets` | 筛选选项，返回所有目录、扩展名及各自的条目数，供页面渲染筛选下拉 |
 
 返回结构为 `{ items, total, page, pageSize, totalPages, allTotal }`，其中 `total` 是筛选后的条数，`allTotal` 是全部文件数。网页端只渲染当前页，选中状态跨页保留，全选范围为当前页。

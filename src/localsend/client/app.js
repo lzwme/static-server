@@ -594,7 +594,7 @@
   var sortOrder = 'desc';
   try {
     var savedSort = JSON.parse(localStorage.getItem('localsend.sort') || 'null');
-    if (savedSort && (savedSort.type === 'time' || savedSort.type === 'size')) {
+    if (savedSort && (savedSort.type === 'time' || savedSort.type === 'size' || savedSort.type === 'name')) {
       sortType = savedSort.type;
       if (savedSort.order === 'asc' || savedSort.order === 'desc') sortOrder = savedSort.order;
     }

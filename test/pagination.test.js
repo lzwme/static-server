@@ -117,6 +117,26 @@ describe('LocalSend 列表分页与搜索', () => {
     assert.equal(txt.count, 15);
   });
 
+  it('支持按名称排序', async () => {
+    const asc = await listPage(base, '?pageSize=500&sort=name&order=asc');
+    const expected = [
+      ...Array.from({ length: 12 }, (_, i) => `page-${String(i + 1).padStart(2, '0')}.txt`),
+      'picture.png',
+      'sub/deep/deep-1.txt',
+      'sub/nested-1.txt',
+      'sub/nested-2.txt',
+    ];
+    assert.deepEqual(
+      asc.items.map((f) => f.name),
+      expected,
+    );
+    const desc = await listPage(base, '?pageSize=500&sort=name&order=desc');
+    assert.deepEqual(
+      desc.items.map((f) => f.name),
+      expected.slice().reverse(),
+    );
+  });
+
   it('上传新文件后总数随之增加', async () => {
     await upload(base, 'fresh.txt', 'fresh');
     const data = await listPage(base, '?q=fresh');

@@ -48,6 +48,11 @@ describe('parseListQuery', () => {
     assert.equal(q.since, 1700000000000);
   });
 
+  it('支持按名称排序', () => {
+    assert.equal(parseListQuery({ sort: 'name' }).sort, 'name');
+    assert.equal(parseListQuery({ sort: 'name', order: 'asc' }).asc, true);
+  });
+
   it('非法参数回退到默认值', () => {
     const q = parseListQuery({ page: 'abc', pageSize: '-5', since: 'x', sort: 'unknown' });
     assert.equal(q.page, 1);
@@ -108,6 +113,17 @@ describe('sortEntries', () => {
   it('主字段相同时按名称兜底，保证翻页顺序稳定', () => {
     const same = [file('z.txt', 100, 1000), file('a.txt', 100, 1000)];
     assert.deepEqual(sortEntries(same, 'time', true).map((e) => e.name), ['a.txt', 'z.txt']);
+  });
+
+  it('按名称排序', () => {
+    const named = [file('c.txt'), file('a.txt'), file('b.txt')];
+    assert.deepEqual(sortEntries(named, 'name', true).map((e) => e.name), ['a.txt', 'b.txt', 'c.txt']);
+    assert.deepEqual(sortEntries(named, 'name', false).map((e) => e.name), ['c.txt', 'b.txt', 'a.txt']);
+  });
+
+  it('名称排序按拼音排列中文，数值部分按大小比较而不是逐字符', () => {
+    const zh = [file('张.txt'), file('李.txt'), file('文件10.txt'), file('文件2.txt')];
+    assert.deepEqual(sortEntries(zh, 'name', true).map((e) => e.name), ['李.txt', '文件2.txt', '文件10.txt', '张.txt']);
   });
 
   it('不会污染原数组', () => {

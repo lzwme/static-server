@@ -20,9 +20,12 @@ export const DEFAULT_PAGE_SIZE = 50;
 /** 允许的最大每页条数，避免一次返回过多数据拖垮浏览器 */
 export const MAX_PAGE_SIZE = 500;
 
+/** 排序字段：time（修改时间）、size（大小）、name（名称） */
+export type SortField = 'time' | 'size' | 'name';
+
 export interface ListQuery {
-  /** 排序字段：time（修改时间）或 size（大小） */
-  sort: 'time' | 'size';
+  /** 排序字段：time（修改时间）、size（大小）或 name（名称） */
+  sort: SortField;
   /** 是否升序 */
   asc: boolean;
   /** 页码，从 1 开始 */
@@ -92,7 +95,7 @@ export function parseListQuery(query: Record<string, unknown>): ListQuery {
   const orderRaw = String(query.order ?? 'desc').toLowerCase();
   const sinceRaw = Number(query.since);
   return {
-    sort: sortRaw === 'size' ? 'size' : 'time',
+    sort: sortRaw === 'size' || sortRaw === 'name' ? sortRaw : 'time',
     asc: orderRaw === 'asc',
     page: intOr(query.page, 1, 1, 1_000_000),
     pageSize: intOr(query.pageSize, DEFAULT_PAGE_SIZE, 1, MAX_PAGE_SIZE),
@@ -130,16 +133,30 @@ export function filterEntries(entries: FileEntry[], query: ListQuery): FileEntry
 }
 
 /**
+ * 名称比较器：中文按拼音、数字按大小（file2 排在 file10 前）。
+ * 数值等价的名称（file1 / file01）比较结果为 0，此时再按原始字符串兜底，
+ * 保证排序是全序——出现并列会让翻页顺序抖动。
+ */
+const nameCollator = new Intl.Collator('zh-Hans-CN', { numeric: true });
+
+function compareName(a: string, b: string): number {
+  const diff = nameCollator.compare(a, b);
+  if (diff !== 0) return diff;
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+/**
  * 排序：主字段相同时按名称兜底，
  * 保证翻页过程中同一条记录不会在两页之间来回跳。
  */
-export function sortEntries(entries: FileEntry[], sort: 'time' | 'size', asc: boolean): FileEntry[] {
+export function sortEntries(entries: FileEntry[], sort: SortField, asc: boolean): FileEntry[] {
   const sign = asc ? 1 : -1;
   return entries.slice().sort((a, b) => {
+    if (sort === 'name') return compareName(a.name, b.name) * sign;
     const diff = sort === 'size' ? a.size - b.size : a.mtime - b.mtime;
     if (diff !== 0) return diff * sign;
-    if (a.name === b.name) return 0;
-    return a.name < b.name ? -sign : sign;
+    return compareName(a.name, b.name) * sign;
   });
 }
 
