@@ -108,9 +108,10 @@
   </section>
 
   <section>
-    <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+    <!-- 标题行：右侧只留低频管理入口，避免与筛选条混成一片 -->
+    <div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
       <h2 class="font-semibold text-base sm:text-lg">文件列表 <span id="fileCount" class="text-xs sm:text-sm text-slate-400 font-normal"></span></h2>
-      <div class="flex gap-2 text-xs sm:text-sm items-center flex-wrap">
+      <div class="flex gap-1.5 sm:gap-2 text-xs sm:text-sm items-center flex-wrap">
         <button id="inboxBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 hover:bg-slate-700 transition" title="收件箱：只看最近收到的文件">
           <span class="sm:hidden">📥</span><span class="hidden sm:inline">📥 收件箱</span>
           <span id="inboxCount" class="hidden ml-1 text-emerald-400 font-mono"></span>
@@ -132,28 +133,35 @@
         <button id="settingsBtn" data-need="admin" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 hover:bg-slate-700 transition" title="设置：口令、令牌、限制与清理策略">
           <span class="sm:hidden">⚙️</span><span class="hidden sm:inline">⚙️ 设置</span>
         </button>
-        <div class="relative">
-          <input id="searchInput" type="search" placeholder="搜索文件名…" autocomplete="off"
-            class="bg-slate-800 border border-slate-700 rounded-lg pl-7 pr-2.5 sm:pr-3 py-1.5 outline-none focus:border-emerald-500/60 placeholder:text-slate-500 w-32 sm:w-44" />
-          <span class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 text-xs pointer-events-none">🔍</span>
-        </div>
+      </div>
+    </div>
+    <!-- 筛选条：搜索 / 筛选 / 排序三组，组内靠拢、组间留白，窄屏按组换行 -->
+    <div class="flex items-center gap-2 mb-4 text-xs sm:text-sm flex-wrap rounded-xl border border-slate-800 bg-slate-900/50 px-2 py-1.5">
+      <div class="relative flex-1 min-w-[8rem]">
+        <input id="searchInput" type="search" placeholder="搜索文件名…" autocomplete="off"
+          class="w-full bg-slate-800 border border-slate-700 rounded-lg pl-7 pr-2.5 sm:pr-3 py-1.5 outline-none focus:border-emerald-500/60 placeholder:text-slate-500" />
+        <span class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 text-xs pointer-events-none">🔍</span>
+      </div>
+      <div class="flex items-center gap-1.5">
         <select id="dirSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 outline-none cursor-pointer" title="按所在目录筛选">
           <option value="">全部目录</option>
         </select>
         <select id="extSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 outline-none cursor-pointer" title="按文件类型筛选">
           <option value="">全部类型</option>
         </select>
+      </div>
+      <div class="flex items-center gap-1.5 sm:ml-auto">
         <select id="sortSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 outline-none cursor-pointer">
           <option value="time">按时间排序</option>
           <option value="size">按大小排序</option>
         </select>
+        <button id="orderBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 hover:bg-slate-700 transition whitespace-nowrap">↓ 降序</button>
         <select id="pageSizeSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-2.5 sm:px-3 py-1.5 outline-none cursor-pointer" title="每页显示条数">
           <option value="20">20 条/页</option>
           <option value="50">50 条/页</option>
           <option value="100">100 条/页</option>
           <option value="200">200 条/页</option>
         </select>
-        <button id="orderBtn" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 hover:bg-slate-700 transition">↓ 降序</button>
       </div>
     </div>
     <!-- 首次使用引导：只在「目录里一个文件都没有」时出现 -->
