@@ -3648,9 +3648,11 @@
         }
         body.innerHTML = html;
         // 开放模式下服务端只接受本机发起的写入：非本机时提前说明，不让用户白填一遍
+        // 按钮保持可点：禁用状态下点它毫无反馈，用户只会以为「保存坏了」，
+        // 由 saveSettings 的统一守卫弹出明确原因
         var remoteOpen = !!sessionInfo.open && !isLoopbackClient();
         $('settingsLocalHint').classList.toggle('hidden', !remoteOpen);
-        $('settingsSave').disabled = remoteOpen;
+        $('settingsSave').classList.toggle('opacity-60', remoteOpen);
         $('settingsSave').title = remoteOpen ? '开放模式下只能在运行服务的本机修改设置' : '';
         $('settingsModal').classList.remove('hidden');
       })
@@ -3694,7 +3696,7 @@
   function saveSettings() {
     // 开放模式 + 非本机：服务端会拒绝，这里先给出明确原因
     if (sessionInfo.open && !isLoopbackClient()) {
-      toast('尚未设置口令，请在本机浏览器修改设置，或在配置文件里设置 password', 'err');
+      toast('尚未设置口令：请在本机改用 127.0.0.1 打开本页，或在配置文件里设置 password', 'err');
       return;
     }
     var changes = collectSettingChanges();

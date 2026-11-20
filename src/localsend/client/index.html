@@ -385,6 +385,7 @@
     <!-- 开放模式（未设置任何口令）下，只有本机才能改设置，避免被局域网内其它人接管 -->
     <p id="settingsLocalHint" class="hidden text-[11px] text-amber-400 leading-relaxed">
       ⚠️ 尚未设置任何口令，为避免被局域网内其它设备接管，设置只能在运行服务的本机浏览器里修改。
+      若你就在这台机器上：把地址里的主机名换成 <span class="font-mono">127.0.0.1</span> 重新打开本页即可。
       想远程管理：在 <span class="font-mono">ss.config.js</span> 里设置 <span class="font-mono">password</span> 后重启，或在本机页面先设置管理员口令。
     </p>
     <div id="settingsBody" class="overflow-auto flex-1 space-y-4 pr-1"></div>
