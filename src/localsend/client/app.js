@@ -114,6 +114,14 @@
     authBlocked = true;
     // 死会话不能再带着走
     clearSession();
+    // 会话确实没了：状态要如实反映，否则页面会以为自己还能用
+    sessionInfo.sessionValid = false;
+    // 服务端说「需要访问令牌」：说明这一步之前就没有任何可用权限，
+    // 身份信息（/api/session）根本拿不到，只能从 401 里补出这条线索
+    if (json && json.needToken) {
+      sessionInfo.hasToken = true;
+      sessionInfo.open = false;
+    }
     // 事件流会自动重连，不断开就是持续的无效请求
     closeEvents();
     // 后台定时器同理：监听目录每 3 秒发一次请求
@@ -235,21 +243,53 @@
     return '开放';
   }
 
+  /**
+   * 是否必须先验证身份才能用页面。
+   *
+   * 配了访问令牌就等于「大门上锁」：没有有效会话时所有接口都是 401，
+   * 页面上的按钮、列表、上传入口全都只是摆设，不如直接遮住，
+   * 免得用户点一圈才被告知「请先验证」。
+   */
+  function needsTokenGate() {
+    return !sessionInfo.open && !!sessionInfo.hasToken && !sessionInfo.sessionValid;
+  }
+
+  /** 未验证时遮住整页，并把「取消」按钮收起来（此时取消等于把自己关在门外） */
+  function updateAuthGate() {
+    var gated = needsTokenGate();
+    var gate = $('authGate');
+    gate.classList.toggle('hidden', !gated);
+    gate.classList.toggle('flex', gated);
+    $('loginCancel').classList.toggle('hidden', gated);
+  }
+
   /** 按当前身份刷新界面上的权限状态 */
   function applyRole() {
     var role = sessionInfo.role;
     var admin = isAdmin();
     var write = canWrite();
-    var logged = role === 'admin' || role === 'visitor';
+    var gated = needsTokenGate();
+    // 只配了访问令牌时，验证通过后服务端给的角色是 open（无口令即全权），
+    // 但它与「谁都不用登录」的开放模式不是一回事，界面上要区分开
+    var tokenVerified = role === 'open' && !sessionInfo.open;
+    var logged = role === 'admin' || role === 'visitor' || tokenVerified;
 
     // 身份徽章：让人一眼看出当前能做什么
     var badge = $('roleBadge');
     // 未登录时能否上传取决于是否配置了访客口令，徽章要如实反映
     var guestWrite = role === 'guest' && write;
-    badge.textContent = sessionInfo.open ? '开放模式' : guestWrite ? '未登录·可上传' : roleName(role);
-    if (sessionInfo.open) {
+    badge.textContent = gated
+      ? '未验证'
+      : sessionInfo.open
+        ? '开放模式'
+        : tokenVerified
+          ? '管理员（令牌）'
+          : guestWrite
+            ? '未登录·可上传'
+            : roleName(role);
+    if (gated || sessionInfo.open) {
       badge.className = 'text-[11px] px-2 py-1 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-300';
-    } else if (role === 'admin') {
+    } else if (admin) {
       badge.className = 'text-[11px] px-2 py-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300';
     } else if (role === 'visitor' || guestWrite) {
       badge.className = 'text-[11px] px-2 py-1 rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-300';
@@ -273,6 +313,8 @@
     }
     // 权限变化会影响「未设口令」的提示，头部信息跟着刷新
     updateHostInfo(lastUsage);
+    // 需要令牌却还没验证时，整页遮起来
+    updateAuthGate();
   }
 
   /**
@@ -504,6 +546,7 @@
         setAuthMethod('');
         // 退出后回到访客身份，重新按访客口径加载
         authBlocked = false;
+        sessionInfo.sessionValid = false;
         sessionInfo.role = sessionInfo.open ? 'open' : 'guest';
         // 断开事件流：会话没了，重连只会不断拿到 401
         closeEvents();
@@ -3779,10 +3822,15 @@
    * 登录与退出
    */
   $('loginBtn').addEventListener('click', function () { openLoginModal(''); });
+  // 遮罩上的入口：验证前页头被遮住，只能从这里打开登录框
+  $('authGateBtn').addEventListener('click', function () { openLoginModal(''); });
   $('logoutBtn').addEventListener('click', logout);
   $('loginCancel').addEventListener('click', closeLoginModal);
   $('loginOk').addEventListener('click', submitLogin);
-  $('loginModal').addEventListener('click', function (e) { if (e.target === $('loginModal')) closeLoginModal(); });
+  // 需要令牌验证时不能点空白关掉：关掉之后页面上没有任何可用入口
+  $('loginModal').addEventListener('click', function (e) {
+    if (e.target === $('loginModal') && !needsTokenGate()) closeLoginModal();
+  });
   $('loginPassword').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') submitLogin();
   });

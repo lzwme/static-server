@@ -128,6 +128,14 @@ export function createAuth(options: AuthOptions = {}): Auth {
   /** 未登录时的基础角色：没配置任何口令时是开放模式 */
   const baseRole = (): Role => (!password && !visitorPassword ? 'open' : 'guest');
 
+  /**
+   * 是否「完全不需要认证」。
+   *
+   * 访问令牌也算一种认证手段：只配了令牌时，所有接口都要求先验证令牌，
+   * 此时再说「开放模式，无需登录」就是自相矛盾。
+   */
+  const isOpen = (): boolean => !password && !visitorPassword && !token;
+
   /** 建立会话 */
   const issue = (role: Role, via: SessionVia): Session => {
     const now = Date.now();
@@ -138,7 +146,7 @@ export function createAuth(options: AuthOptions = {}): Auth {
 
   return {
     get open() {
-      return !password && !visitorPassword;
+      return isOpen();
     },
     get hasAdmin() {
       return !!password;
@@ -179,8 +187,8 @@ export function createAuth(options: AuthOptions = {}): Auth {
       return session;
     },
     roleOf(key) {
-      // 没有配置任何口令时保持开放模式，行为与以前完全一致
-      if (!password && !visitorPassword) return 'open';
+      // 没有配置任何认证手段时保持开放模式，行为与以前完全一致
+      if (isOpen()) return 'open';
       const session = this.get(key);
       if (!session) return 'guest';
       return session.role;

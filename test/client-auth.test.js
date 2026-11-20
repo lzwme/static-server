@@ -359,3 +359,40 @@ describe('统一登录入口', () => {
     assert.equal(visible(app.el('loginModal')), false, '成功后应关闭弹窗');
   });
 });
+
+describe('需要令牌时的整页遮罩', () => {
+  const unverified = { role: 'guest', open: false, hasAdmin: false, hasVisitor: false, hasToken: true, sessionValid: false, expiresAt: 0 };
+
+  it('未验证时遮住整页，并收起「取消」按钮', async () => {
+    const app = loadApp({ sessionData: unverified });
+    await app.settle();
+    assert.equal(visible(app.el('authGate')), true, '应遮住整页');
+    assert.equal(visible(app.el('loginCancel')), false, '此时取消等于把自己关在门外');
+    assert.equal(app.el('roleBadge').textContent, '未验证');
+    // 遮罩上留了入口，点它打开认证框
+    app.el('authGateBtn').dispatch('click');
+    assert.equal(visible(app.el('loginModal')), true);
+    // 提示文案不能再出现「开放模式，无需登录」这种自相矛盾的说法
+    assert.doesNotMatch(app.el('loginHint').textContent, /开放模式/);
+    assert.match(app.el('loginHint').textContent, /访问令牌/);
+  });
+
+  it('令牌验证通过后恢复整页', async () => {
+    const app = loadApp({
+      sessionData: { ...unverified, role: 'open', sessionValid: true, expiresAt: Date.now() + 3600000 },
+      apiStatus: 200,
+      apiBody: { code: 0, data: { items: [], total: 0, page: 1, pageSize: 50, totalPages: 1, allTotal: 0 } },
+    });
+    await app.settle();
+    assert.equal(visible(app.el('authGate')), false);
+    assert.equal(visible(app.el('loginCancel')), true);
+    assert.equal(app.el('roleBadge').textContent, '管理员（令牌）');
+  });
+
+  it('只配口令、没配令牌时不做遮罩，保留只读浏览', async () => {
+    const app = loadApp({ sessionData: { role: 'guest', open: false, hasAdmin: true, hasVisitor: false, hasToken: false, sessionValid: false, expiresAt: 0 } });
+    await app.settle();
+    assert.equal(visible(app.el('authGate')), false);
+    assert.equal(visible(app.el('loginCancel')), true);
+  });
+});

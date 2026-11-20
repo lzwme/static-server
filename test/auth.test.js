@@ -170,4 +170,18 @@ describe('访问令牌', () => {
     assert.equal(auth.plainRole('admin-pwd'), 'admin');
     assert.equal(auth.plainRole('nope'), null);
   });
+
+  it('只配置访问令牌时不是开放模式', () => {
+    const auth = createAuth({ token: 'site-token' });
+    // 令牌就是大门锁：没验证时所有接口都是 401，不能再宣称「开放模式，无需登录」
+    assert.equal(auth.open, false);
+    assert.equal(auth.hasToken, true);
+    assert.equal(auth.roleOf(''), 'guest');
+    assert.equal(canManage('guest'), false);
+    // 令牌验证通过后，仍然按「没有口令即全权」处理
+    const session = auth.loginByToken(digestOf(auth, 'token', 'site-token'));
+    assert.ok(session);
+    assert.equal(auth.roleOf(session.token), 'open');
+    assert.equal(canManage('open'), true);
+  });
 });

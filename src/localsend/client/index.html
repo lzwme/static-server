@@ -430,6 +430,18 @@
   </div>
 </div>
 
+<!-- 需要访问令牌时遮住整页：验证前不暴露任何操作入口 -->
+<div id="authGate" class="hidden fixed inset-0 z-40 bg-slate-950/90 items-center justify-center p-6">
+  <div class="max-w-sm w-full text-center flex flex-col items-center gap-3">
+    <div class="text-3xl" aria-hidden="true">🔒</div>
+    <div class="text-sm font-medium text-slate-200">需要验证身份</div>
+    <p class="text-xs text-slate-400 leading-relaxed">
+      这台服务器启用了访问令牌，验证通过后才能浏览与传输文件。
+    </p>
+    <button id="authGateBtn" class="mt-1 text-xs bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-medium rounded-lg px-4 py-1.5 transition">输入访问令牌</button>
+  </div>
+</div>
+
 <!-- Toast -->
 <div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] rounded-xl px-5 py-3 text-sm shadow-xl border border-white/10"></div>
 
