@@ -9,7 +9,7 @@
  */
 import { existsSync, type FSWatcher, readdirSync, statSync, watch } from 'node:fs';
 import { join } from 'node:path';
-import { type FileEntry, isInternalDirName, listFiles } from './path';
+import { type FileEntry, isHiddenDirName, isInternalDirName, listFiles } from './path';
 
 export interface ListCacheOptions {
   /** 存储目录 */
@@ -217,6 +217,8 @@ export function createListCache(options: ListCacheOptions): ListCache {
           // 忽略读取失败的条目
           continue;
         }
+        // 点开头的隐藏目录不进列表，也就不必为它花掉监听预算
+        if (isHiddenDirName(name)) continue;
         watchDir(full);
         walk(full, depth + 1);
       }

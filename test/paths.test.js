@@ -72,17 +72,31 @@ describe('listFiles', () => {
     fs.mkdirSync(path.join(dir, 'sub'), { recursive: true });
     fs.mkdirSync(path.join(dir, '.chunks'), { recursive: true });
     fs.mkdirSync(path.join(dir, '.trash'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'sub', '.cache'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'root.txt'), 'root');
     fs.writeFileSync(path.join(dir, 'sub', 'nested.txt'), 'nested');
     fs.writeFileSync(path.join(dir, '.chunks', 'tmp.bin'), 'chunk');
     fs.writeFileSync(path.join(dir, '.trash', 'item-1'), 'trash');
+    fs.writeFileSync(path.join(dir, '.git', 'config'), 'git');
+    fs.writeFileSync(path.join(dir, 'sub', '.cache', 'blob'), 'blob');
+    fs.writeFileSync(path.join(dir, '.env'), 'KEY=1');
   });
 
   after(() => removeDir(dir));
 
-  it('递归列出文件并跳过内部目录', () => {
+  it('递归列出文件，跳过内部目录与点开头的目录', () => {
     const names = listFiles(dir).map((f) => f.name).sort();
-    assert.deepEqual(names, ['root.txt', 'sub/nested.txt']);
+    assert.deepEqual(names, ['.env', 'root.txt', 'sub/nested.txt']);
+  });
+
+  it('点开头的文件照常显示，点开头的目录整体跳过', () => {
+    const names = listFiles(dir).map((f) => f.name);
+    assert.ok(names.includes('.env'), '点开头的文件不是目录，应当保留');
+    assert.ok(
+      !names.some((n) => n.startsWith('.git/') || n.startsWith('sub/.cache/')),
+      '隐藏目录里的文件不应出现在列表里',
+    );
   });
 
   it('返回的条目包含大小与扩展名', () => {
@@ -97,7 +111,7 @@ describe('listFiles', () => {
     assert.deepEqual(names, ['sub/nested.txt']);
   });
 
-  it('listDirs 只返回一级子目录且不含内部目录', () => {
+  it('listDirs 只返回一级子目录，且不含内部目录与点开头的目录', () => {
     const dirs = listDirs(dir).sort();
     assert.deepEqual(dirs, ['sub']);
   });

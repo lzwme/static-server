@@ -23,6 +23,15 @@ export function isInternalDirName(name: string): boolean {
 }
 
 /**
+ * 以点开头的目录一律视为隐藏目录（如 `.git`、`.idea`、`.DS_Store` 目录），
+ * 不进入文件列表、目录筛选与 WebDAV 浏览：它们不是用户传上来的文件，
+ * 混在列表里只会造成干扰。点开头的**文件**（如 `.env`）照常显示。
+ */
+export function isHiddenDirName(name: string): boolean {
+  return name.startsWith('.');
+}
+
+/**
  * 规范化相对路径：去掉首尾空白与多余分隔符，拒绝 `..`、绝对路径与盘符。
  * 返回以 `/` 分隔的相对路径，非法时返回空串。
  */
@@ -97,8 +106,8 @@ export function listFiles(baseDir: string, filter?: (relPath: string) => boolean
         continue;
       }
       if (stat.isDirectory()) {
-        // 内部目录（如分片暂存区）不对外暴露
-        if (isInternalDirName(name)) continue;
+        // 内部目录（如分片暂存区）与隐藏目录都不对外暴露
+        if (isInternalDirName(name) || isHiddenDirName(name)) continue;
         walk(full, rel, depth + 1);
         continue;
       }
@@ -118,13 +127,13 @@ export function listFiles(baseDir: string, filter?: (relPath: string) => boolean
   return entries;
 }
 
-/** 目录下的直接子目录（相对路径），不含内部目录 */
+/** 目录下的直接子目录（相对路径），不含内部目录与隐藏目录 */
 export function listDirs(baseDir: string): string[] {
   if (!existsSync(baseDir)) return [];
   const dirs: string[] = [];
   for (const name of readdirSync(baseDir)) {
-    // 内部目录（如分片暂存区、回收站）不对外暴露
-    if (isInternalDirName(name)) continue;
+    // 内部目录（如分片暂存区、回收站）与点开头的隐藏目录都不对外暴露
+    if (isInternalDirName(name) || isHiddenDirName(name)) continue;
     try {
       if (statSync(join(baseDir, name)).isDirectory()) dirs.push(name);
     } catch {
