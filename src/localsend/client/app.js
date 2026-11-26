@@ -20,6 +20,8 @@
   var TOKEN_STORAGE_KEY = 'localsend.token';
   /** 登录方式：password（口令）/ token（访问令牌）。会话失效时据此提示正确的重新认证入口 */
   var AUTH_METHOD_STORAGE_KEY = 'localsend.authMethod';
+  /** 主题偏好：system / light / dark，默认跟随系统 */
+  var THEME_STORAGE_KEY = 'localsend.theme';
   var sessionToken = '';
   // 用户输入的访问令牌：只留在浏览器里，用于向服务端换取会话
   var accessToken = '';
@@ -40,10 +42,13 @@
   var sseProbeAt = 0;
   /** 本次登录使用的凭据类型 */
   var authMethod = '';
+  /** 主题偏好，未选择时为 system */
+  var themePref = 'system';
   try {
     sessionToken = localStorage.getItem(SESSION_STORAGE_KEY) || '';
     accessToken = localStorage.getItem(TOKEN_STORAGE_KEY) || '';
     authMethod = localStorage.getItem(AUTH_METHOD_STORAGE_KEY) || '';
+    themePref = localStorage.getItem(THEME_STORAGE_KEY) || 'system';
   } catch (e) {
     // localStorage 不可用时忽略
   }
@@ -51,6 +56,48 @@
   var sessionInfo = { role: 'open', open: true, hasAdmin: false, hasVisitor: false };
   /** 最近一次拿到的用量信息（头部那行机器信息要用） */
   var lastUsage = null;
+
+  var themeMeta = document.querySelector('meta[name="theme-color"]');
+  /** 系统当前是否偏好深色；旧浏览器按深色处理，保持原有外观 */
+  function systemIsDark() {
+    return !window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+  /** 实际生效的主题：偏好为 system 时跟随系统 */
+  function effectiveTheme() {
+    return themePref === 'light' || themePref === 'dark' ? themePref : (systemIsDark() ? 'dark' : 'light');
+  }
+  /** 应用主题并同步按钮状态；persist=true 时记住用户选择 */
+  function applyTheme(pref, persist) {
+    themePref = pref === 'light' || pref === 'dark' ? pref : 'system';
+    var theme = effectiveTheme();
+    document.documentElement.dataset.theme = theme;
+    if (persist) {
+      try { localStorage.setItem(THEME_STORAGE_KEY, themePref); } catch (e) { /* 忽略存储失败 */ }
+    }
+    var labels = {
+      system: ['🖥️', '跟随系统'],
+      light: ['☀️', '浅色'],
+      dark: ['🌙', '深色'],
+    };
+    var label = labels[themePref];
+    var icon = $('themeIcon');
+    var text = $('themeLabel');
+    var btn = $('themeBtn');
+    if (icon) icon.textContent = label[0];
+    if (text) text.textContent = ' ' + label[1];
+    if (btn) btn.title = '主题：' + label[1] + '（点击切换）';
+    if (themeMeta) themeMeta.setAttribute('content', theme === 'light' ? '#f8fafc' : '#0f172a');
+  }
+  applyTheme(themePref, false);
+  // 只在跟随系统时响应系统主题变化，手动选择后不再被覆盖
+  if (window.matchMedia) {
+    var darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    var onSystemThemeChange = function () {
+      if (themePref === 'system') applyTheme('system', false);
+    };
+    if (darkQuery.addEventListener) darkQuery.addEventListener('change', onSystemThemeChange);
+    else if (darkQuery.addListener) darkQuery.addListener(onSystemThemeChange);
+  }
 
   /** 是否可以执行危险操作（删除、整理目录、撤销分享等） */
   function isAdmin() {
@@ -745,7 +792,7 @@
     if (authBlocked && type === 'err') return;
     var el = $('toast');
     el.textContent = '';
-    el.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] rounded-xl px-4 sm:px-5 py-2.5 sm:py-3 text-xs sm:text-sm shadow-xl border border-white/10 flex items-center gap-3 ' + (type === 'ok' ? 'bg-emerald-600/90' : type === 'err' ? 'bg-red-600/90' : 'bg-slate-800/90');
+    el.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] rounded-xl px-4 sm:px-5 py-2.5 sm:py-3 text-xs sm:text-sm shadow-xl border border-white/10 flex items-center gap-3 ' + (type === 'ok' ? 'bg-emerald-600/90 text-white' : type === 'err' ? 'bg-red-600/90 text-white' : 'bg-slate-800/90 text-slate-200');
     el.appendChild(document.createTextNode(msg));
     if (action) {
       var btn = document.createElement('button');
@@ -3203,6 +3250,10 @@
   }
 
   // 事件绑定
+  $('themeBtn').addEventListener('click', function () {
+    var modes = ['system', 'light', 'dark'];
+    applyTheme(modes[(modes.indexOf(themePref) + 1) % modes.length], true);
+  });
   $('dropZone').addEventListener('click', function () { $('fileInput').click(); });
   // 移动端悬浮上传按钮
   $('fabUpload').addEventListener('click', function () { $('fileInput').click(); });

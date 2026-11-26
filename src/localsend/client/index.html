@@ -9,6 +9,15 @@
 <meta name="theme-color" content="#10b981" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="LocalSend" />
+<!-- 主题要在样式加载前定好，避免跟随系统时出现白屏闪烁 -->
+<script>
+  (function () {
+    var pref = 'system';
+    try { pref = localStorage.getItem('localsend.theme') || 'system'; } catch (e) { /* 忽略存储失败 */ }
+    var prefersDark = !window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.dataset.theme = pref === 'light' || pref === 'dark' ? pref : (prefersDark ? 'dark' : 'light');
+  })();
+</script>
 <!-- 本地资源：局域网常常没有外网，CDN 不可达时会导致页面无样式、二维码无法生成 -->
 <link rel="stylesheet" href="/localsend/style.css" />
 <script src="/localsend/vendor/qr-code-styling.js"></script>
@@ -52,6 +61,9 @@
       </div>
       <!-- 身份：显示当前权限，必要时登录 -->
       <div class="flex items-center gap-2 flex-wrap">
+        <button id="themeBtn" class="px-2.5 sm:px-3 py-1 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 hover:border-emerald-500/40 transition text-xs sm:text-sm text-slate-300" title="主题：跟随系统（点击切换）" aria-label="切换主题">
+          <span id="themeIcon">🖥️</span><span id="themeLabel" class="hidden sm:inline"> 跟随系统</span>
+        </button>
         <span id="roleBadge" class="hidden text-[11px] px-2 py-1 rounded-lg border border-slate-700 bg-slate-800/70 text-slate-300"></span>
         <button id="loginBtn" class="px-2.5 sm:px-3 py-1 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 hover:border-emerald-500/40 transition text-xs sm:text-sm text-slate-300">🔑 登录</button>
         <button id="logoutBtn" style="display:none" class="px-2.5 sm:px-3 py-1 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 transition text-xs sm:text-sm text-slate-300">退出登录</button>

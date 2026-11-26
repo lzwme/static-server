@@ -10,3 +10,38 @@
 /* 只扫描前端页面与脚本，避免把 dist/、临时目录等无关内容编进产物 */
 @source '../client/index.html';
 @source '../client/app.js';
+
+/*
+ * 主题：页面原有配色全部使用 Tailwind 调色板变量，这里按主题重映射变量，
+ * 无需给每处 class 加 light:/dark: 前缀。未显式选择时由 index.html 的脚本
+ * 根据系统偏好写入 data-theme，默认保持原来的深色外观。
+ */
+:root {
+  color-scheme: dark;
+}
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-slate-950: #f8fafc;
+  --color-slate-900: #ffffff;
+  --color-slate-800: #f1f5f9;
+  --color-slate-700: #e2e8f0;
+  --color-slate-600: #cbd5e1;
+  --color-slate-500: #475569;
+  --color-slate-400: #64748b;
+  --color-slate-300: #334155;
+  --color-slate-200: #0f172a;
+  --color-emerald-600: #047857;
+  --color-emerald-400: #059669;
+  --color-emerald-300: #047857;
+  --color-red-600: #b91c1c;
+  --color-red-400: #dc2626;
+  --color-red-300: #b91c1c;
+  --color-amber-400: #d97706;
+  --color-amber-300: #b45309;
+  --color-amber-200: #78350f;
+  --color-sky-400: #0284c7;
+  --color-sky-300: #0369a1;
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
