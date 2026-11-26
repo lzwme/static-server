@@ -22,8 +22,9 @@ export async function initServer(c?: SSConfig): Promise<Express> {
   const app = express();
   const config = await getConfig(!c, c);
   const { rootDir = '.', port = 8888, host = 'localhost' } = config;
-  const url = `http${config.https ? 's' : ''}://${host}:${port}`;
-  const ipUrl = `http://${getIp()}:${port}`;
+  const protocol = config.https ? 'https' : 'http';
+  const url = `${protocol}://${host}:${port}`;
+  const ipUrl = `${protocol}://${getIp()}:${port}`;
 
   app.use((req, res, next) => {
     // 反射 Origin 时不能同时允许携带凭据，否则任意站点都能发起带凭据的跨域读取

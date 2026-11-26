@@ -336,7 +336,7 @@ export async function initLocalsend(app: Express): Promise<LocalsendHandle> {
    * 用户扫码后只会看到「无法访问此网站」，却不知道是网卡选错了。
    */
   const ipCandidates = getIpCandidates();
-  const ipUrl = `http://${ipCandidates[0]?.address || 'localhost'}:${port}`;
+  const ipUrl = `${config.https ? 'https' : 'http'}://${ipCandidates[0]?.address || 'localhost'}:${port}`;
   logger.log(color.green('LocalSend : '.padStart(15, ' ')), color.greenBright('局域网文件传输功能已开启'));
   logger.log(color.green('LocalSend DIR : '.padStart(15, ' ')), color.cyanBright(dir));
   logger.log(color.green('LocalSend URL : '.padStart(15, ' ')), color.cyanBright(`${ipUrl}/localsend`));

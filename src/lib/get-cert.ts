@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { greenBright } from 'console-log-colors';
 import { logger } from '../get-logger';
 import { createCA, createCert } from './mkcert';
+import { getIpCandidates } from './utils';
 
 export async function getCert(host = 'localhost', cacheDir = '') {
   const result = {
@@ -12,11 +13,16 @@ export async function getCert(host = 'localhost', cacheDir = '') {
     certKey: '',
     certCrt: '',
   };
+
+  // 证书需覆盖局域网 IP：否则用 IP 访问时浏览器会报证书域名不匹配（ERR_CERT_COMMON_NAME_INVALID）
+  const domains = Array.from(new Set([host, '127.0.0.1', ...getIpCandidates().map((item) => item.address)]));
+  // 缓存文件名带上地址集合：换网络导致 IP 变化时重新签发，避免复用缺少新 IP 的旧证书
+  const certName = domains.join('_').replace(/[^\w.-]/g, '_');
   const dirs = {
     caKey: resolve(cacheDir, 'ca.key'),
     caCrt: resolve(cacheDir, 'ca.crt'),
-    certKey: resolve(cacheDir, `${host}.key`),
-    certCrt: resolve(cacheDir, `${host}.crt`),
+    certKey: resolve(cacheDir, `${certName}.key`),
+    certCrt: resolve(cacheDir, `${certName}.crt`),
   };
 
   if (cacheDir) {
@@ -54,7 +60,7 @@ export async function getCert(host = 'localhost', cacheDir = '') {
 
   if (!result.certKey) {
     const cert = await createCert({
-      domains: [host, '127.0.0.1'],
+      domains,
       caKey: result.caKey,
       caCert: result.caCrt,
       subject: [
