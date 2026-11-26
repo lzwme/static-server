@@ -6,6 +6,8 @@ on:
   push:
     tags:
       - "v*.*.*"
+  # 手动触发：tag 推送失败或需要重新发布时使用
+  workflow_dispatch:
   # release:
   #   types: [created]
 
