@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [1.1.0](https://github.com/lzwme/static-server/compare/v1.0.0...v1.1.0) (2026-11-26)
+
+
+### Features
+
+* 支持明暗主题切换并默认跟随系统 ([548c358](https://github.com/lzwme/static-server/commit/548c3580df5e696c9248bafebbb779e7e99cb700))
+* **localsend:** 文件列表过滤以点开头的目录 ([a6ebe7a](https://github.com/lzwme/static-server/commit/a6ebe7a5a87bf6158051a5a0fa14148c7b0d9eba))
+
+
+### Bug Fixes
+
+* **https:** 打印的 IP 地址按 https 协议输出，证书 SAN 覆盖局域网 IP ([dfe8038](https://github.com/lzwme/static-server/commit/dfe803823839275cc6fa1438ee6efe2e00d6072d))
+
 ### [0.0.11](https://github.com/lzwme/static-server/compare/v0.0.10...v0.0.11) (2026-11-18)
 
 
